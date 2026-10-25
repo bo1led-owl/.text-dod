@@ -69,11 +69,6 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     return 0;
 }
 
-// 12 (9 if stored in SoA)
-//
-// tag (1)
-// padding (3)
-// data (8)
 const Expr = struct {
     kind: Kind,
     data: Data,

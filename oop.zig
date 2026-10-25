@@ -4,6 +4,9 @@ const builtin = @import("builtin");
 var out_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 var in_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 
+const use_arena_for_expressions = false;
+const use_arena_for_names = false;
+
 const use_safe_allocator = builtin.mode == .debug or builtin.mode == .safe;
 var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
 
@@ -21,6 +24,9 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 
     const io = io_impl.io();
 
+    var expr_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer expr_arena.deinit();
+
     var name_arena: std.heap.ArenaAllocator = .init(gpa);
     defer name_arena.deinit();
 
@@ -33,7 +39,12 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 
         var input_reader = input_file.readerStreaming(io, &in_buffer);
 
-        var parser: Parser = .init(gpa, &input_reader.interface);
+        var parser: Parser = .init(
+            gpa,
+            if (use_arena_for_expressions) expr_arena.allocator() else gpa,
+            if (use_arena_for_names) name_arena.allocator() else gpa,
+            &input_reader.interface,
+        );
         defer parser.deinit();
 
         break :parse parser.run() catch |err| {
@@ -69,11 +80,6 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     return 0;
 }
 
-// 24
-//
-// tag (1)
-// padding (7)
-// data (16)
 const Expr = union(enum) {
     number: u64,
     var_ref: []const u8,
@@ -89,6 +95,7 @@ const Expr = union(enum) {
     pub const Binary = struct { lhs: *Expr, rhs: *Expr };
 
     pub fn deinit(self: *Expr, gpa: std.mem.Allocator) void {
+        defer self.* = undefined;
         defer gpa.destroy(self);
 
         switch (self.*) {
@@ -97,27 +104,30 @@ const Expr = union(enum) {
                 bin.lhs.deinit(gpa);
                 bin.rhs.deinit(gpa);
             },
-            .var_ref, .number => {},
+            .var_ref => |s| if (!use_arena_for_names) gpa.free(s),
+            .number => {},
         }
     }
 };
 
 const Program = struct {
-    name_arena: std.heap.ArenaAllocator,
     top_level_expressions: []const *Expr,
 
     pub fn deinit(self: *Program, gpa: std.mem.Allocator) void {
-        self.name_arena.deinit();
-        for (self.top_level_expressions) |e| {
-            e.deinit(gpa);
+        if (!use_arena_for_expressions) {
+            for (self.top_level_expressions) |e| {
+                e.deinit(gpa);
+            }
         }
+
         gpa.free(self.top_level_expressions);
     }
 };
 
 const Parser = struct {
     gpa: std.mem.Allocator,
-    name_arena: std.heap.ArenaAllocator,
+    expr_allocator: std.mem.Allocator,
+    name_allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
     line_writer: std.Io.Writer.Allocating,
 
@@ -129,10 +139,16 @@ const Parser = struct {
         UnterminatedExpression,
     };
 
-    pub fn init(gpa: std.mem.Allocator, reader: *std.Io.Reader) Parser {
+    pub fn init(
+        gpa: std.mem.Allocator,
+        expr_allocator: std.mem.Allocator,
+        name_allocator: std.mem.Allocator,
+        reader: *std.Io.Reader,
+    ) Parser {
         return .{
             .gpa = gpa,
-            .name_arena = .init(gpa),
+            .expr_allocator = expr_allocator,
+            .name_allocator = name_allocator,
             .reader = reader,
             .line_writer = .init(gpa),
         };
@@ -150,10 +166,7 @@ const Parser = struct {
             try res.append(self.gpa, expr);
         }
 
-        return .{
-            .name_arena = self.name_arena,
-            .top_level_expressions = try res.toOwnedSlice(self.gpa),
-        };
+        return .{ .top_level_expressions = try res.toOwnedSlice(self.gpa) };
     }
 
     fn parseExpr(self: *Parser) (error{ OutOfMemory, ReadFailed } || Error)!?*Expr {
@@ -190,7 +203,7 @@ const Parser = struct {
     }
 
     fn createExpr(self: *Parser, value: Expr) !*Expr {
-        const res = try self.gpa.create(Expr);
+        const res = try self.expr_allocator.create(Expr);
         res.* = value;
         return res;
     }
@@ -230,7 +243,7 @@ const Parser = struct {
 
                     return self.createExpr(.{ .number = value });
                 } else if (first_char == '_' or std.ascii.isAlphabetic(first_char)) {
-                    const cloned_name = try self.name_arena.allocator().alloc(u8, item.len);
+                    const cloned_name = try self.name_allocator.alloc(u8, item.len);
                     @memcpy(cloned_name, item);
                     return self.createExpr(.{ .var_ref = cloned_name });
                 } else {
