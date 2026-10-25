@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const N_COMMANDS int = 50_000
+const N_COMMANDS int = 1_000_000
 const MAX_NUMBER int = 1_000_000_000
 const MAX_DEPTH int = 42
 

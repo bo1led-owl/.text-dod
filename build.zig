@@ -9,9 +9,13 @@ pub fn build(b: *std.Build) !void {
 
     const bench_step = b.step("bench", "Run benchmarks");
 
-    const bench_cmd = b.addSystemCommand(
-        &.{ "hyperfine", "-N", "-w", "10", "--min-runs", "20", "--metrics", "all", "--input", "./input" },
-    );
+    const bench_cmd = b.addSystemCommand(&.{
+        "hyperfine",  "-N",
+        "-w",         "10",
+        "--metrics",  "time_wall_clock,memory_peak_resident,cache_misses",
+        "--min-runs", "20",
+        "--input",    "./input",
+    });
     bench_cmd.addArgs(&.{ "-n", "dod" });
     bench_cmd.addArtifactArg2(dod, .{});
     bench_cmd.addArgs(&.{ "-n", "oop" });
