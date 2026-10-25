@@ -8,7 +8,7 @@ import (
 
 const N_COMMANDS int = 1_000_000
 const MAX_NUMBER int = 1_000_000_000
-const MAX_DEPTH int = 16
+const MAX_DEPTH int = 42
 
 func main() {
 	seed := time.Now().UnixNano()

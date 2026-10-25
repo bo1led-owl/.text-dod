@@ -7,6 +7,16 @@ var in_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 const use_safe_allocator = builtin.mode == .debug or builtin.mode == .safe;
 var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
 
+fn printElapsed(comptime title: []const u8, from: std.Io.Timestamp, to: std.Io.Timestamp) void {
+    var fmt_buffer: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&fmt_buffer);
+
+    const duration = from.durationTo(to);
+    duration.format(&writer) catch return;
+
+    std.log.info(title ++ "\t{s}", .{writer.buffered()});
+}
+
 pub fn main(init: std.process.Init.Minimal) u8 {
     const gpa = if (use_safe_allocator) safe_allocator.allocator() else std.heap.smp_allocator;
     defer if (use_safe_allocator) {
@@ -21,8 +31,8 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 
     const io = io_impl.io();
 
-    var name_arena: std.ArrayList(u8) = .empty;
-    defer name_arena.deinit(gpa);
+    const clock: std.Io.Clock = .real;
+    const parsing_start = clock.now(io);
 
     var program: Program = parse: {
         const input_file = std.Io.Dir.cwd().openFile(io, "input", .{ .allow_directory = false }) catch |err| {
@@ -45,6 +55,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         };
     };
     defer program.deinit(gpa);
+    printElapsed("parsing", parsing_start, clock.now(io));
 
     const stdout = std.Io.File.stdout();
     var stdout_writer = stdout.writerStreaming(io, &out_buffer);
@@ -53,6 +64,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     var executor: Executor = .init(gpa, program, &stdout_writer.interface);
     defer executor.deinit();
 
+    const execution_start = clock.now(io);
     for (program.top_level_expressions) |expr| {
         _ = executor.executeExpr(expr) catch |err| {
             std.log.err(
@@ -65,6 +77,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             return 1;
         };
     }
+    printElapsed("execution", execution_start, clock.now(io));
 
     return 0;
 }
