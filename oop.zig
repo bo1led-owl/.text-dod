@@ -5,6 +5,7 @@ const format = @import("format.zig");
 var out_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 var in_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 
+// TODO:
 const use_arena_for_expressions = false;
 const use_arena_for_names = false;
 
@@ -28,7 +29,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     var program: Program = program: {
         const stdin = std.Io.File.stdin();
         var input_reader = stdin.reader(io, &in_buffer);
-        var decoder: format.Reader = .{ .reader = &input_reader.interface };
+        var decoder: format.Decoder = .{ .reader = &input_reader.interface };
         break :program readProgram(gpa, &decoder) catch |err| {
             std.log.err("failed to read program: {s}", .{@errorName(switch (err) {
                 error.ReadFailed => input_reader.err.?,
@@ -62,7 +63,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     return 0;
 }
 
-fn readProgram(gpa: std.mem.Allocator, decoder: *format.Reader) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
+fn readProgram(gpa: std.mem.Allocator, decoder: *format.Decoder) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
     var top_level_expressions: std.ArrayList(*Expr) = .empty;
     errdefer top_level_expressions.deinit(gpa);
 
@@ -82,7 +83,7 @@ fn readProgram(gpa: std.mem.Allocator, decoder: *format.Reader) error{ OutOfMemo
 
 fn readExpr(
     gpa: std.mem.Allocator,
-    decoder: *format.Reader,
+    decoder: *format.Decoder,
 ) !*Expr{
     const opcode = try decoder.readOpcode();
     const expr: Expr = switch (opcode) {

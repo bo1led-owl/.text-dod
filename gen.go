@@ -24,7 +24,7 @@ func main() {
 //	| "print" expr
 //	| "=" ident expr
 //
-// stmt := expr ";"
+// stmt := expr "\n"
 type Generator struct {
 	rng     *rand.Rand
 	defined []string
@@ -37,7 +37,7 @@ func NewGenerator(seed int64) *Generator {
 
 func (g *Generator) genCommand() {
 	g.genExpr(g.rng.Intn(MAX_DEPTH))
-	fmt.Println(";")
+	fmt.Println()
 }
 
 func (g *Generator) nextName() string {

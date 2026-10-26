@@ -13,12 +13,20 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
-    const preprocess_step = b.addRunArtifact(preprocess);
-    preprocess_step.addFileArg2(b.path("input"), .{});
-    const input = preprocess_step.addOutputFileArg2("input-preprocessed", .{});
+    const preprocess_installation = b.addInstallArtifact(preprocess, .{});
+    b.getInstallStep().dependOn(&preprocess_installation.step);
+
+    const run_preprocess_step = b.step("preprocess", "Run preprocessing");
+    const preprocess_cmd = b.addRunArtifact(preprocess);
+    run_preprocess_step.dependOn(&preprocess_cmd.step);
+    preprocess_cmd.addPassthruArgs();
 
     const dod = setupExecutable(b, target, optimize, "dod", "the data-oriented implementation");
     const oop = setupExecutable(b, target, optimize, "oop", "the object-oriented implementation");
+
+    const internal_preprocess_cmd = b.addRunArtifact(preprocess);
+    internal_preprocess_cmd.addFileArg2(b.path("input"), .{});
+    const preprocessed_input = internal_preprocess_cmd.addOutputFileArg2("input-preprocessed", .{});
 
     const bench_step = b.step("bench", "Run benchmarks");
 
@@ -33,7 +41,7 @@ pub fn build(b: *std.Build) !void {
     bench_cmd.addArgs(&.{ "-n", "oop" });
     bench_cmd.addArtifactArg2(oop, .{});
     bench_cmd.addArg("--input");
-    bench_cmd.addFileArg2(input, .{});
+    bench_cmd.addFileArg2(preprocessed_input, .{});
 
     bench_step.dependOn(&bench_cmd.step);
     bench_step.dependOn(b.getInstallStep());

@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     var program: Program = program: {
         const stdin = std.Io.File.stdin();
         var input_reader = stdin.reader(io, &in_buffer);
-        var decoder: format.Reader = .{ .reader = &input_reader.interface };
+        var decoder: format.Decoder = .{ .reader = &input_reader.interface };
         break :program readProgram(gpa, &decoder) catch |err| {
             std.log.err("failed to read program: {s}", .{@errorName(switch (err) {
                 error.ReadFailed => input_reader.err.?,
@@ -59,7 +59,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     return 0;
 }
 
-fn readProgram(gpa: std.mem.Allocator, decoder: *format.Reader) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
+fn readProgram(gpa: std.mem.Allocator, decoder: *format.Decoder) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
     var names: std.ArrayList(u8) = .empty;
     var top_level_expressions: std.ArrayList(Expr.Index) = .empty;
     var expression_storage: std.MultiArrayList(Expr) = .empty;
@@ -88,7 +88,7 @@ fn readExpr(
     gpa: std.mem.Allocator,
     names: *std.ArrayList(u8),
     expression_storage: *std.MultiArrayList(Expr),
-    decoder: *format.Reader,
+    decoder: *format.Decoder,
 ) !Expr.Index {
     const opcode = try decoder.readOpcode();
     const data: Expr.Data = switch (opcode) {
