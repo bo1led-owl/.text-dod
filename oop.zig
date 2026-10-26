@@ -5,9 +5,8 @@ const format = @import("format.zig");
 var out_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 var in_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 
-// TODO:
-const use_arena_for_expressions = false;
-const use_arena_for_names = false;
+const use_arena_for_expressions = true;
+const use_arena_for_names = true;
 
 const use_safe_allocator = builtin.mode == .debug or builtin.mode == .safe;
 var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
@@ -26,11 +25,21 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 
     const io = io_impl.io();
 
+    var expr_arena: std.heap.ArenaAllocator = .init(gpa);
+    var name_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer expr_arena.deinit();
+    defer name_arena.deinit();
+
     var program: Program = program: {
         const stdin = std.Io.File.stdin();
         var input_reader = stdin.reader(io, &in_buffer);
         var decoder: format.Decoder = .{ .reader = &input_reader.interface };
-        break :program readProgram(gpa, &decoder) catch |err| {
+        break :program readProgram(
+            gpa,
+            if (use_arena_for_expressions) expr_arena.allocator() else gpa,
+            if (use_arena_for_names) name_arena.allocator() else gpa,
+            &decoder,
+        ) catch |err| {
             std.log.err("failed to read program: {s}", .{@errorName(switch (err) {
                 error.ReadFailed => input_reader.err.?,
                 else => err,
@@ -63,12 +72,17 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     return 0;
 }
 
-fn readProgram(gpa: std.mem.Allocator, decoder: *format.Decoder) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
+fn readProgram(
+    gpa: std.mem.Allocator,
+    expr_allocator: std.mem.Allocator,
+    name_allocator: std.mem.Allocator,
+    decoder: *format.Decoder,
+) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
     var top_level_expressions: std.ArrayList(*Expr) = .empty;
     errdefer top_level_expressions.deinit(gpa);
 
     while (true) {
-        const expr = readExpr(gpa, decoder) catch |err| switch (err) {
+        const expr = readExpr(expr_allocator, name_allocator, decoder) catch |err| switch (err) {
             error.EndOfStream => break,
             else => |e| return e,
         };
@@ -82,43 +96,44 @@ fn readProgram(gpa: std.mem.Allocator, decoder: *format.Decoder) error{ OutOfMem
 }
 
 fn readExpr(
-    gpa: std.mem.Allocator,
+    expr_allocator: std.mem.Allocator,
+    name_allocator: std.mem.Allocator,
     decoder: *format.Decoder,
-) !*Expr{
+) !*Expr {
     const opcode = try decoder.readOpcode();
-    const expr: Expr = switch (opcode) {
+
+    const res = try expr_allocator.create(Expr);
+    res.* = switch (opcode) {
         .number => .{ .number = try decoder.readNumber() },
         .var_ref => var_ref: {
             const len = try decoder.readVarNameLen();
-            const buf = try gpa.alloc(u8, len);
+            const buf = try name_allocator.alloc(u8, len);
             try decoder.readVarName(buf);
             break :var_ref .{ .var_ref = buf };
         },
-        .print => .{ .print = try readExpr(gpa, decoder) },
+        .print => .{ .print = try readExpr(expr_allocator, name_allocator, decoder) },
         .add => .{ .add = .{
-            .lhs = try readExpr(gpa, decoder),
-            .rhs = try readExpr(gpa, decoder),
+            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
+            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
         } },
         .sub => .{ .sub = .{
-            .lhs = try readExpr(gpa, decoder),
-            .rhs = try readExpr(gpa, decoder),
+            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
+            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
         } },
         .mul => .{ .mul = .{
-            .lhs = try readExpr(gpa, decoder),
-            .rhs = try readExpr(gpa, decoder),
+            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
+            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
         } },
         .div => .{ .div = .{
-            .lhs = try readExpr(gpa, decoder),
-            .rhs = try readExpr(gpa, decoder),
+            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
+            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
         } },
         .assign => .{ .assign = .{
-            .lhs = try readExpr(gpa, decoder),
-            .rhs = try readExpr(gpa, decoder),
+            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
+            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
         } },
     };
 
-    const res = try gpa.create(Expr);
-    res.* = expr;
     return res;
 }
 
@@ -126,7 +141,7 @@ const Program = struct {
     top_level_expressions: []const *Expr,
 
     pub fn deinit(self: *Program, gpa: std.mem.Allocator) void {
-        if (!use_arena_for_expressions) {
+        if (!use_arena_for_expressions and !use_arena_for_names) {
             for (self.top_level_expressions) |e| {
                 e.deinit(gpa);
             }
@@ -151,8 +166,9 @@ const Expr = union(enum) {
     pub const Binary = struct { lhs: *Expr, rhs: *Expr };
 
     pub fn deinit(self: *Expr, gpa: std.mem.Allocator) void {
-        defer self.* = undefined;
-        defer gpa.destroy(self);
+        if (!use_arena_for_expressions) {
+            defer gpa.destroy(self);
+        }
 
         switch (self.*) {
             .print => |op| op.deinit(gpa),

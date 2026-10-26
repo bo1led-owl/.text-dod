@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-const N_COMMANDS int = 1_000_000
-const MAX_NUMBER int = 1_000_000_000
-const MAX_DEPTH int = 42
+const N_STATEMENTS int = 50_000
+const MAX_NUMBER int = 1_000_000
+const MAX_DEPTH int = 16
 
 func main() {
 	seed := time.Now().UnixNano()
 	g := NewGenerator(seed)
-	for range N_COMMANDS {
+	for range N_STATEMENTS {
 		g.genCommand()
 	}
 }

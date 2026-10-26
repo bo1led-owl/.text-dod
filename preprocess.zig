@@ -132,7 +132,7 @@ const Preprocessor = struct {
                 else => |e| return e,
             };
 
-        if (self.reader.buffered()[0] == '\n') {
+        if (self.reader.bufferedLen() > 0 and self.reader.buffered()[0] == '\n') {
             self.reader.toss(1);
         }
 
