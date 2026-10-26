@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-const N_STATEMENTS int = 50_000
-const MAX_NUMBER int = 1_000_000
-const MAX_DEPTH int = 16
+const N_STATEMENTS int = 1_000_000
+const MAX_NUMBER int = 1_000_000_000
+const MAX_DEPTH int = 42
 
 func main() {
 	seed := time.Now().UnixNano()

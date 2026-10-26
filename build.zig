@@ -4,48 +4,48 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const preprocess = setupPreprocess(b, target, optimize);
+    const assembler = setupAssembler(b, target, optimize);
 
     const dod = setupExecutable(b, target, optimize, "dod", "the data-oriented implementation");
     const oop = setupExecutable(b, target, optimize, "oop", "the object-oriented implementation");
 
-    setupBench(b, preprocess, dod, oop);
+    setupBench(b, assembler, dod, oop);
 }
 
-fn setupPreprocess(
+fn setupAssembler(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
 ) *std.Build.Step.Compile {
-    const preprocess = b.addExecutable(.{
-        .name = "preprocess",
+    const assembler = b.addExecutable(.{
+        .name = "assembler",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("preprocess.zig"),
+            .root_source_file = b.path("assembler.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
 
-    const preprocess_installation = b.addInstallArtifact(preprocess, .{});
-    b.getInstallStep().dependOn(&preprocess_installation.step);
+    const assembler_installation = b.addInstallArtifact(assembler, .{});
+    b.getInstallStep().dependOn(&assembler_installation.step);
 
-    const run_preprocess_step = b.step("preprocess", "Run preprocessing");
-    const preprocess_cmd = b.addRunArtifact(preprocess);
-    run_preprocess_step.dependOn(&preprocess_cmd.step);
-    preprocess_cmd.addPassthruArgs();
+    const run_assembler_step = b.step("assemble", "Assemble a file");
+    const assembler_cmd = b.addRunArtifact(assembler);
+    run_assembler_step.dependOn(&assembler_cmd.step);
+    assembler_cmd.addPassthruArgs();
 
-    return preprocess;
+    return assembler;
 }
 
 fn setupBench(
     b: *std.Build,
-    preprocess: *std.Build.Step.Compile,
+    assembler: *std.Build.Step.Compile,
     dod: *std.Build.Step.Compile,
     oop: *std.Build.Step.Compile,
 ) void {
-    const internal_preprocess_cmd = b.addRunArtifact(preprocess);
-    internal_preprocess_cmd.addFileArg2(b.path("input"), .{});
-    const preprocessed_input = internal_preprocess_cmd.addOutputFileArg2("input-preprocessed", .{});
+    const internal_assembler_cmd = b.addRunArtifact(assembler);
+    internal_assembler_cmd.addFileArg2(b.path("input"), .{});
+    const assemblered_input = internal_assembler_cmd.addOutputFileArg2("input-assembled", .{});
 
     const bench_step = b.step("bench", "Run benchmarks");
 
@@ -60,7 +60,7 @@ fn setupBench(
     bench_cmd.addArgs(&.{ "-n", "oop" });
     bench_cmd.addArtifactArg2(oop, .{});
     bench_cmd.addArg("--input");
-    bench_cmd.addFileArg2(preprocessed_input, .{});
+    bench_cmd.addFileArg2(assemblered_input, .{});
 
     bench_step.dependOn(&bench_cmd.step);
     bench_step.dependOn(b.getInstallStep());

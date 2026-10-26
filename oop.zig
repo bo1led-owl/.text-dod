@@ -5,8 +5,8 @@ const format = @import("format.zig");
 var out_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 var in_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 
-const use_arena_for_expressions = true;
-const use_arena_for_names = true;
+const use_arena_for_expressions = false;
+const use_arena_for_names = false;
 
 const use_safe_allocator = builtin.mode == .debug or builtin.mode == .safe;
 var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
@@ -141,7 +141,7 @@ const Program = struct {
     top_level_expressions: []const *Expr,
 
     pub fn deinit(self: *Program, gpa: std.mem.Allocator) void {
-        if (!use_arena_for_expressions and !use_arena_for_names) {
+        if (!use_arena_for_expressions or !use_arena_for_names) {
             for (self.top_level_expressions) |e| {
                 e.deinit(gpa);
             }
@@ -166,9 +166,9 @@ const Expr = union(enum) {
     pub const Binary = struct { lhs: *Expr, rhs: *Expr };
 
     pub fn deinit(self: *Expr, gpa: std.mem.Allocator) void {
-        if (!use_arena_for_expressions) {
-            defer gpa.destroy(self);
-        }
+        defer if (!use_arena_for_expressions) {
+            gpa.destroy(self);
+        };
 
         switch (self.*) {
             .print => |op| op.deinit(gpa),
