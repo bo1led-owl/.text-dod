@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const format = @import("format.zig");
 
 var out_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 var in_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
@@ -9,16 +10,6 @@ const use_arena_for_names = false;
 
 const use_safe_allocator = builtin.mode == .debug or builtin.mode == .safe;
 var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
-
-fn printElapsed(comptime title: []const u8, from: std.Io.Timestamp, to: std.Io.Timestamp) void {
-    var fmt_buffer: [128]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&fmt_buffer);
-
-    const duration = from.durationTo(to);
-    duration.format(&writer) catch return;
-
-    std.log.info(title ++ "\t{s}", .{writer.buffered()});
-}
 
 pub fn main(init: std.process.Init.Minimal) u8 {
     const gpa = if (use_safe_allocator) safe_allocator.allocator() else std.heap.smp_allocator;
@@ -34,42 +25,19 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 
     const io = io_impl.io();
 
-    var expr_arena: std.heap.ArenaAllocator = .init(gpa);
-    defer expr_arena.deinit();
-
-    var name_arena: std.heap.ArenaAllocator = .init(gpa);
-    defer name_arena.deinit();
-
-    const clock: std.Io.Clock = .real;
-    const parsing_start = clock.now(io);
-
-    var program: Program = parse: {
-        const input_file = std.Io.Dir.cwd().openFile(io, "input", .{ .allow_directory = false }) catch |err| {
-            std.log.err("failed to open input file: {s}", .{@errorName(err)});
-            return 1;
-        };
-        defer input_file.close(io);
-
-        var input_reader = input_file.readerStreaming(io, &in_buffer);
-
-        var parser: Parser = .init(
-            gpa,
-            if (use_arena_for_expressions) expr_arena.allocator() else gpa,
-            if (use_arena_for_names) name_arena.allocator() else gpa,
-            &input_reader.interface,
-        );
-        defer parser.deinit();
-
-        break :parse parser.run() catch |err| {
-            std.log.err("failed to parse statement: {s}", .{@errorName(switch (err) {
-                error.OutOfMemory, error.ReadFailed => if (err == error.ReadFailed) input_reader.err.? else err,
+    var program: Program = program: {
+        const stdin = std.Io.File.stdin();
+        var input_reader = stdin.reader(io, &in_buffer);
+        var decoder: format.Reader = .{ .reader = &input_reader.interface };
+        break :program readProgram(gpa, &decoder) catch |err| {
+            std.log.err("failed to read program: {s}", .{@errorName(switch (err) {
+                error.ReadFailed => input_reader.err.?,
                 else => err,
             })});
             return 1;
         };
     };
     defer program.deinit(gpa);
-    printElapsed("parsing", parsing_start, clock.now(io));
 
     const stdout = std.Io.File.stdout();
     var stdout_writer = stdout.writerStreaming(io, &out_buffer);
@@ -78,7 +46,6 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     var executor: Executor = .init(gpa, &stdout_writer.interface);
     defer executor.deinit();
 
-    const execution_start = clock.now(io);
     for (program.top_level_expressions) |expr| {
         _ = executor.executeExpr(expr) catch |err| {
             std.log.err(
@@ -91,10 +58,82 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             return 1;
         };
     }
-    printElapsed("execution", execution_start, clock.now(io));
 
     return 0;
 }
+
+fn readProgram(gpa: std.mem.Allocator, decoder: *format.Reader) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
+    var top_level_expressions: std.ArrayList(*Expr) = .empty;
+    errdefer top_level_expressions.deinit(gpa);
+
+    while (true) {
+        const expr = readExpr(gpa, decoder) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+
+        try top_level_expressions.append(gpa, expr);
+    }
+
+    return .{
+        .top_level_expressions = try top_level_expressions.toOwnedSlice(gpa),
+    };
+}
+
+fn readExpr(
+    gpa: std.mem.Allocator,
+    decoder: *format.Reader,
+) !*Expr{
+    const opcode = try decoder.readOpcode();
+    const expr: Expr = switch (opcode) {
+        .number => .{ .number = try decoder.readNumber() },
+        .var_ref => var_ref: {
+            const len = try decoder.readVarNameLen();
+            const buf = try gpa.alloc(u8, len);
+            try decoder.readVarName(buf);
+            break :var_ref .{ .var_ref = buf };
+        },
+        .print => .{ .print = try readExpr(gpa, decoder) },
+        .add => .{ .add = .{
+            .lhs = try readExpr(gpa, decoder),
+            .rhs = try readExpr(gpa, decoder),
+        } },
+        .sub => .{ .sub = .{
+            .lhs = try readExpr(gpa, decoder),
+            .rhs = try readExpr(gpa, decoder),
+        } },
+        .mul => .{ .mul = .{
+            .lhs = try readExpr(gpa, decoder),
+            .rhs = try readExpr(gpa, decoder),
+        } },
+        .div => .{ .div = .{
+            .lhs = try readExpr(gpa, decoder),
+            .rhs = try readExpr(gpa, decoder),
+        } },
+        .assign => .{ .assign = .{
+            .lhs = try readExpr(gpa, decoder),
+            .rhs = try readExpr(gpa, decoder),
+        } },
+    };
+
+    const res = try gpa.create(Expr);
+    res.* = expr;
+    return res;
+}
+
+const Program = struct {
+    top_level_expressions: []const *Expr,
+
+    pub fn deinit(self: *Program, gpa: std.mem.Allocator) void {
+        if (!use_arena_for_expressions) {
+            for (self.top_level_expressions) |e| {
+                e.deinit(gpa);
+            }
+        }
+
+        gpa.free(self.top_level_expressions);
+    }
+};
 
 const Expr = union(enum) {
     number: u64,
@@ -123,152 +162,6 @@ const Expr = union(enum) {
             .var_ref => |s| if (!use_arena_for_names) gpa.free(s),
             .number => {},
         }
-    }
-};
-
-const Program = struct {
-    top_level_expressions: []const *Expr,
-
-    pub fn deinit(self: *Program, gpa: std.mem.Allocator) void {
-        if (!use_arena_for_expressions) {
-            for (self.top_level_expressions) |e| {
-                e.deinit(gpa);
-            }
-        }
-
-        gpa.free(self.top_level_expressions);
-    }
-};
-
-const Parser = struct {
-    gpa: std.mem.Allocator,
-    expr_allocator: std.mem.Allocator,
-    name_allocator: std.mem.Allocator,
-    reader: *std.Io.Reader,
-    line_writer: std.Io.Writer.Allocating,
-
-    const Error = error{
-        NoWhitespace,
-        NumberTooLarge,
-        InvalidCharacter,
-        IncompleteExpression,
-        UnterminatedExpression,
-    };
-
-    pub fn init(
-        gpa: std.mem.Allocator,
-        expr_allocator: std.mem.Allocator,
-        name_allocator: std.mem.Allocator,
-        reader: *std.Io.Reader,
-    ) Parser {
-        return .{
-            .gpa = gpa,
-            .expr_allocator = expr_allocator,
-            .name_allocator = name_allocator,
-            .reader = reader,
-            .line_writer = .init(gpa),
-        };
-    }
-
-    pub fn deinit(self: *Parser) void {
-        defer self.* = undefined;
-        self.line_writer.deinit();
-    }
-
-    pub fn run(self: *Parser) (error{ OutOfMemory, ReadFailed } || Error)!Program {
-        var res: std.ArrayList(*Expr) = .empty;
-
-        while (try self.parseExpr()) |expr| {
-            try res.append(self.gpa, expr);
-        }
-
-        return .{ .top_level_expressions = try res.toOwnedSlice(self.gpa) };
-    }
-
-    fn parseExpr(self: *Parser) (error{ OutOfMemory, ReadFailed } || Error)!?*Expr {
-        self.line_writer.clearRetainingCapacity();
-
-        _ = self.reader.streamDelimiter(&self.line_writer.writer, ';') catch |err|
-            switch (err) {
-                error.WriteFailed => return error.OutOfMemory,
-                error.EndOfStream => if (std.mem.findNone(u8, self.line_writer.written(), &std.ascii.whitespace) != null)
-                    return error.UnterminatedExpression
-                else
-                    return null,
-                else => |e| return e,
-            };
-
-        // discard ';'
-        _ = self.reader.discard(.limited(1)) catch |err| switch (err) {
-            error.EndOfStream => unreachable,
-            else => |e| return e,
-        };
-
-        const input = self.line_writer.written();
-        var cursor = std.mem.splitAny(u8, input, &std.ascii.whitespace);
-
-        const res = try self.parseExprInternal(&cursor);
-        errdefer if (res) |e| e.deinit(self.gpa);
-
-        while (cursor.next()) |item| {
-            if (item.len != 0) {
-                return error.IncompleteExpression;
-            }
-        }
-        return res;
-    }
-
-    fn createExpr(self: *Parser, value: Expr) !*Expr {
-        const res = try self.expr_allocator.create(Expr);
-        res.* = value;
-        return res;
-    }
-
-    fn parseExprInternal(self: *Parser, cursor: *std.mem.SplitIterator(u8, .any)) !?*Expr {
-        while (cursor.next()) |item| {
-            if (item.len == 0) {
-                continue;
-            }
-
-            switch (item[0]) {
-                '=', '+', '-', '*', '/' => |c| if (item.len == 1) {
-                    const data: Expr.Binary = .{
-                        .lhs = (try self.parseExprInternal(cursor)) orelse return error.IncompleteExpression,
-                        .rhs = (try self.parseExprInternal(cursor)) orelse return error.IncompleteExpression,
-                    };
-
-                    return self.createExpr(switch (c) {
-                        '=' => .{ .assign = data },
-                        '+' => .{ .add = data },
-                        '-' => .{ .sub = data },
-                        '*' => .{ .mul = data },
-                        '/' => .{ .div = data },
-                        else => unreachable,
-                    });
-                } else {
-                    return error.NoWhitespace;
-                },
-                else => |first_char| if (std.mem.eql(u8, item, "print")) {
-                    const operand = (try self.parseExprInternal(cursor)) orelse return error.IncompleteExpression;
-                    return self.createExpr(.{ .print = operand });
-                } else if (std.ascii.isDigit(first_char)) {
-                    const value = std.fmt.parseUnsigned(u64, item, 10) catch |err| switch (err) {
-                        error.Overflow => return error.NumberTooLarge,
-                        error.InvalidCharacter => return error.NoWhitespace,
-                    };
-
-                    return self.createExpr(.{ .number = value });
-                } else if (first_char == '_' or std.ascii.isAlphabetic(first_char)) {
-                    const cloned_name = try self.name_allocator.alloc(u8, item.len);
-                    @memcpy(cloned_name, item);
-                    return self.createExpr(.{ .var_ref = cloned_name });
-                } else {
-                    return error.InvalidCharacter;
-                },
-            }
-        }
-
-        return null;
     }
 };
 
