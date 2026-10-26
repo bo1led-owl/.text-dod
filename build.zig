@@ -4,6 +4,19 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const preprocess = setupPreprocess(b, target, optimize);
+
+    const dod = setupExecutable(b, target, optimize, "dod", "the data-oriented implementation");
+    const oop = setupExecutable(b, target, optimize, "oop", "the object-oriented implementation");
+
+    setupBench(b, preprocess, dod, oop);
+}
+
+fn setupPreprocess(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+) *std.Build.Step.Compile {
     const preprocess = b.addExecutable(.{
         .name = "preprocess",
         .root_module = b.createModule(.{
@@ -21,9 +34,15 @@ pub fn build(b: *std.Build) !void {
     run_preprocess_step.dependOn(&preprocess_cmd.step);
     preprocess_cmd.addPassthruArgs();
 
-    const dod = setupExecutable(b, target, optimize, "dod", "the data-oriented implementation");
-    const oop = setupExecutable(b, target, optimize, "oop", "the object-oriented implementation");
+    return preprocess;
+}
 
+fn setupBench(
+    b: *std.Build,
+    preprocess: *std.Build.Step.Compile,
+    dod: *std.Build.Step.Compile,
+    oop: *std.Build.Step.Compile,
+) void {
     const internal_preprocess_cmd = b.addRunArtifact(preprocess);
     internal_preprocess_cmd.addFileArg2(b.path("input"), .{});
     const preprocessed_input = internal_preprocess_cmd.addOutputFileArg2("input-preprocessed", .{});
