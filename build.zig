@@ -44,8 +44,8 @@ fn setupBench(
     oop: *std.Build.Step.Compile,
 ) void {
     const internal_assembler_cmd = b.addRunArtifact(assembler);
-    internal_assembler_cmd.addFileArg2(b.path("input"), .{});
-    const assemblered_input = internal_assembler_cmd.addOutputFileArg2("input-assembled", .{});
+    internal_assembler_cmd.addFileArg2(b.path("benchmark-input"), .{});
+    const assemblered_input = internal_assembler_cmd.addOutputFileArg2("benchmark-input-assembled", .{});
 
     const bench_step = b.step("bench", "Run benchmarks");
 
