@@ -1,7 +1,5 @@
 # properly cooking with data-oriented design
 
-Доклад о data-oriented дизайне на .text
-
 ## Структура репозитория
 
 - `assembler.zig` - ассемблер программ, вызывается через `zig build assemble -- IN OUT`
