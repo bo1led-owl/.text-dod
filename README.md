@@ -1,8 +1,8 @@
-= properly cooking with data-oriented design
+# properly cooking with data-oriented design
 
 Доклад о data-oriented дизайне на .text
 
-== Структура репозитория
+## Структура репозитория
 
 - `assembler.zig` - ассемблер программ, вызывается через `zig build assemble -- IN OUT`
 - `dod.zig` - data-oriented реализация, вызывается через `zig build run-dod`, ожидает бинарный ввод в stdin
@@ -12,7 +12,7 @@
 - `pres.pdf` - презентация к докладу
 - `pres/` - исходный код презентации
 
-== Запуск бенчмарка
+## Запуск бенчмарка
 
 Для бенчмарка необходим `hyperfine`.
 
