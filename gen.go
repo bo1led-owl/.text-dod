@@ -18,13 +18,6 @@ func main() {
 	}
 }
 
-// expr := int | ident
-//
-//	| "+" expr expr | "-" expr expr | "*" expr expr | "/" expr expr
-//	| "print" expr
-//	| "=" ident expr
-//
-// stmt := expr "\n"
 type Generator struct {
 	rng     *rand.Rand
 	defined []string
