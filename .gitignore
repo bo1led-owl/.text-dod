@@ -1,3 +1,4 @@
 .zig-cache/
 zig-out/
 pres/
+benchmark-input

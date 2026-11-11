@@ -5,21 +5,25 @@ const format = @import("format.zig");
 var out_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 var in_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 
-const use_safe_allocator = builtin.mode == .debug or builtin.mode == .safe;
-var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
-
 pub fn main(init: std.process.Init.Minimal) u8 {
-    const gpa = if (use_safe_allocator) safe_allocator.allocator() else std.heap.smp_allocator;
-    defer if (use_safe_allocator) {
-        _ = safe_allocator.deinit();
+    var allocator = switch (builtin.optimize) {
+        .debug => std.heap.DebugAllocator(.{}){},
+        .safe => std.heap.SafeAllocator.init(std.heap.page_allocator, .{}),
+        else => struct {
+            pub fn allocator(self: @This()) std.mem.Allocator {
+                _ = self;
+                return std.heap.brk_allocator;
+            }
+            pub fn deinit(self: @This()) void {
+                _ = self;
+            }
+        }{},
     };
 
-    var io_impl = std.Io.Threaded.init(gpa, .{
-        .argv0 = .init(init.args),
-        .environ = init.environ,
-    });
-    defer io_impl.deinit();
+    const gpa = allocator.allocator();
+    defer _ = allocator.deinit();
 
+    var io_impl = std.Io.Threaded.init_single_threaded;
     const io = io_impl.io();
 
     const input_file_name, const output_file_name = args: {
