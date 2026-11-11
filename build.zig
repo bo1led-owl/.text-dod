@@ -9,17 +9,21 @@ pub fn build(b: *std.Build) !void {
     try setupBench(b, assembler, &.{ "time_wall_clock", "cache_misses" }, &.{
         setupExecutable(b, target, optimize, b.path("dod.zig"), "dod-aos", &.{
             .{ "use_multiarraylist", false },
+            .{ "use_u64", false },
         }),
         setupExecutable(b, target, optimize, b.path("dod.zig"), "dod-soa", &.{
             .{ "use_multiarraylist", true },
+            .{ "use_u64", true },
         }),
-        setupExecutable(b, target, optimize, b.path("oop.zig"), "oop-arenas", &.{
-            .{ "use_arena_for_expressions", true },
-            .{ "use_arena_for_names", true },
+        setupExecutable(b, target, optimize, b.path("dod.zig"), "dod-aos-naive", &.{
+            .{ "use_multiarraylist", false },
+            .{ "use_u64", true },
+        }),
+        setupExecutable(b, target, optimize, b.path("oop.zig"), "oop-arena", &.{
+            .{ "use_arena", true },
         }),
         setupExecutable(b, target, optimize, b.path("oop.zig"), "oop", &.{
-            .{ "use_arena_for_expressions", false },
-            .{ "use_arena_for_names", false },
+            .{ "use_arena", false },
         }),
     });
 }

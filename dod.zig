@@ -11,13 +11,10 @@ pub fn main() u8 {
         .debug => std.heap.DebugAllocator(.{}){},
         .safe => std.heap.SafeAllocator.init(std.heap.page_allocator, .{}),
         else => struct {
-            pub fn allocator(self: @This()) std.mem.Allocator {
-                _ = self;
-                return std.heap.brk_allocator;
+            pub fn allocator(_: @This()) std.mem.Allocator {
+                return if (builtin.single_threaded) std.heap.brk_allocator else std.heap.smp_allocator;
             }
-            pub fn deinit(self: @This()) void {
-                _ = self;
-            }
+            pub fn deinit(_: @This()) void {}
         }{},
     };
 
@@ -105,7 +102,7 @@ fn readExpr(
     const data: Expr.Data = switch (opcode) {
         .number => .{ .number = num: {
             const num64 = try decoder.readNumber();
-            break :num if (config.use_multiarraylist)
+            break :num if (config.use_u64)
                 num64
             else
                 [2]u32{ @truncate(num64), @truncate(num64 >> 32) };
@@ -163,7 +160,7 @@ const Expr = struct {
     pub const Binary = struct { lhs: Expr.Index, rhs: Expr.Index };
 
     pub const Data = union(enum) {
-        number: if (config.use_multiarraylist) u64 else [2]u32,
+        number: if (config.use_u64) u64 else [2]u32,
         name: Name,
         unary: Expr.Index,
         binary: Binary,
@@ -238,7 +235,7 @@ pub const Executor = struct {
                     else => return error.ExpressionIsNotAssignable,
                 }
             },
-            .number => return if (config.use_multiarraylist)
+            .number => return if (config.use_u64)
                 expr.data.number
             else
                 (@as(u64, @intCast(expr.data.number[1])) << 32) | expr.data.number[0],

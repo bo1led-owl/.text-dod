@@ -3,6 +3,8 @@ const builtin = @import("builtin");
 const format = @import("format.zig");
 const config = @import("config");
 
+const ArenaAllocator = @import("ArenaAllocator.zig");
+
 var out_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 var in_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
 
@@ -11,13 +13,10 @@ pub fn main() u8 {
         .debug => std.heap.DebugAllocator(.{}){},
         .safe => std.heap.SafeAllocator.init(std.heap.page_allocator, .{}),
         else => struct {
-            pub fn allocator(self: @This()) std.mem.Allocator {
-                _ = self;
-                return std.heap.brk_allocator;
+            pub fn allocator(_: @This()) std.mem.Allocator {
+                return if (builtin.single_threaded) std.heap.brk_allocator else std.heap.smp_allocator;
             }
-            pub fn deinit(self: @This()) void {
-                _ = self;
-            }
+            pub fn deinit(_: @This()) void {}
         }{},
     };
 
@@ -27,10 +26,8 @@ pub fn main() u8 {
     var io_impl = std.Io.Threaded.init_single_threaded;
     const io = io_impl.io();
 
-    var expr_arena: std.heap.ArenaAllocator = .init(gpa);
-    var name_arena: std.heap.ArenaAllocator = .init(gpa);
-    defer expr_arena.deinit();
-    defer name_arena.deinit();
+    var arena: ArenaAllocator = .init(gpa);
+    defer arena.deinit();
 
     var program: Program = program: {
         const stdin = std.Io.File.stdin();
@@ -38,8 +35,8 @@ pub fn main() u8 {
         var decoder: format.Decoder = .{ .reader = &input_reader.interface };
         break :program readProgram(
             gpa,
-            if (config.use_arena_for_expressions) expr_arena.allocator() else gpa,
-            if (config.use_arena_for_names) name_arena.allocator() else gpa,
+            if (config.use_arena) arena.allocator() else gpa,
+            if (config.use_arena) arena.allocator() else gpa,
             &decoder,
         ) catch |err| {
             std.log.err("failed to read program: {s}", .{@errorName(switch (err) {
@@ -143,7 +140,7 @@ const Program = struct {
     top_level_expressions: []const *Expr,
 
     pub fn deinit(self: *Program, gpa: std.mem.Allocator) void {
-        if (!config.use_arena_for_expressions or !config.use_arena_for_names) {
+        if (!config.use_arena) {
             for (self.top_level_expressions) |e| {
                 e.deinit(gpa);
             }
@@ -168,18 +165,18 @@ const Expr = union(enum) {
     pub const Binary = struct { lhs: *Expr, rhs: *Expr };
 
     pub fn deinit(self: *Expr, gpa: std.mem.Allocator) void {
-        defer if (!config.use_arena_for_expressions) {
-            gpa.destroy(self);
-        };
+        if (!config.use_arena) {
+            defer gpa.destroy(self);
 
-        switch (self.*) {
-            .print => |op| op.deinit(gpa),
-            .add, .sub, .mul, .div, .assign => |bin| {
-                bin.lhs.deinit(gpa);
-                bin.rhs.deinit(gpa);
-            },
-            .var_ref => |s| if (!config.use_arena_for_names) gpa.free(s),
-            .number => {},
+            switch (self.*) {
+                .print => |op| op.deinit(gpa),
+                .add, .sub, .mul, .div, .assign => |bin| {
+                    bin.lhs.deinit(gpa);
+                    bin.rhs.deinit(gpa);
+                },
+                .var_ref => |s| gpa.free(s),
+                .number => {},
+            }
         }
     }
 };

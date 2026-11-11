@@ -10,13 +10,10 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         .debug => std.heap.DebugAllocator(.{}){},
         .safe => std.heap.SafeAllocator.init(std.heap.page_allocator, .{}),
         else => struct {
-            pub fn allocator(self: @This()) std.mem.Allocator {
-                _ = self;
-                return std.heap.brk_allocator;
+            pub fn allocator(_: @This()) std.mem.Allocator {
+                return if (builtin.single_threaded) std.heap.brk_allocator else std.heap.smp_allocator;
             }
-            pub fn deinit(self: @This()) void {
-                _ = self;
-            }
+            pub fn deinit(_: @This()) void {}
         }{},
     };
 
