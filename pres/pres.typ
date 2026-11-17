@@ -1,10 +1,15 @@
 #import "@preview/polylux:0.4.0": *
 #import "@preview/zebra:0.1.0" as zebra
 #import "@preview/fletcher:0.5.8" as fletcher: edge, node
-#import "@preview/cetz:0.5.3" as cetz
+#import "@preview/lilaq:0.6.0" as lq
 
 #let fg-color = rgb("#ddd")
 #let bg-color = rgb("#111")
+#let red = rgb(236, 113, 141)
+#let green = rgb(68, 180, 128)
+#let blue = rgb(83, 105, 170)
+#let purple = rgb(180, 105, 170)
+#let orange = rgb(210, 125, 70)
 
 #set document(title: [Properly Cooking with Data-Oriented Design])
 
@@ -28,6 +33,7 @@
 
 #show raw: set text(size: 20pt, font: "Source Code Pro", weight: 400)
 
+#set figure(numbering: none)
 #show figure.caption: set text(size: 18pt)
 
 #set footnote.entry(separator: none)
@@ -40,13 +46,60 @@
 
 #let qr(s, w) = zebra.qrcode(s, width: w, fill: fg-color, background-fill: bg-color)
 
+#show: lq.set-diagram(
+  fill: bg-color,
+  cycle: (blue, green, red).map(c => it => {
+    set lq.style(fill: c)
+    set lq.mark(fill: c, stroke: c)
+    it
+  }),
+)
+
+#show: lq.set-spine(stroke: fg-color)
+#show: lq.set-tick(stroke: fg-color)
+#show: lq.set-grid(stroke: bg-color.lighten(50%), stroke-sub: none)
+#show: lq.set-legend(fill: bg-color, stroke: fg-color)
+#show lq.selector(lq.diagram): set text(fg-color)
+
+#let benchmark(title, impls, colors, timings) = [
+  #set align(center + horizon)
+  #lq.diagram(
+    title: lq.title(position: bottom, dy: 2em, title),
+    height: 80%,
+    width: 100%,
+    fill: bg-color,
+    xaxis: (
+      subticks: none,
+      ticks: impls.enumerate(),
+    ),
+    yaxis: (
+      label: [Время в секундах],
+      subticks: none,
+    ),
+    lq.bar(
+      fill: colors,
+      range(impls.len()),
+      timings,
+    ),
+  )
+]
+
+#let main-benchmark(n) = {
+  benchmark(
+    [На 100.000 выражений со средней глубиной 12.6],
+    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact").slice(0, n),
+    (red, green, blue, purple, orange).slice(0, n),
+    (1.326, 1.004, 1.021, 0.974, 0.898).slice(0, n),
+  )
+}
+
 #slide[
   #set page(margin: 0pt, header: none, footer: none)
 
   #place(image("vergil-temen-ni-gru.jpg", height: 100%, width: 100%, fit: "cover"))
 
   #place(top + center, dy: 2em, [
-    #set text(font: "DMC5Font", weight: 400)
+    #set text(font: "DMC5Font")
 
     #let chrome = gradient.linear(
       white,
@@ -59,7 +112,7 @@
 
     #let logo(body, size, tracking) = box[
       #set text(size: size, tracking: tracking)
-      #place(dx: 0.04em, dy: 0.05em, text(fill: rgb("#000000dd"), body))
+      #place(dx: size * 0.05, dy: size * 0.045, text(fill: rgb("#000000dd"), body))
       #place(text(fill: rgb(0, 0, 0, 0), stroke: 1.6pt + rgb("#0a0a0a"), body))
       #text(fill: chrome, body)
     ]
@@ -76,7 +129,7 @@
   #columns(2)[
     ```
     = a 42
-    print + a 37
+    print + a 67
     = c + = b print * a 7 b
     print c 
     ```
@@ -86,12 +139,22 @@
     #only(2)[
       ```
       a = 42
-      print (a + 37)
+      print (a + 67)
       c = (b = (print (a * 7))) + b
       print c 
       ```
     ]
   ]
+]
+
+#slide[
+  = С места в карьер
+
+  ```
+  / / print print / - print 4742626078375765758 14027711697529443467 * / 12802463756112957134 18132309934977557170 8608641055037238382 =  - / / 6984107485703404146 - 9916929475378643327 10919414819050606021 - 13568855607397529471 14522749415374840358 / 15862839410548134960 7323286685982528320 print =  print - + - / print =  * - = b  9769004714064862973 = c b / print print * c + 4033141316165442587 = b 14910621076775651280 + = b print + print 8610250548778301068 * 17268888967100637777 13020379258374241411 6122846502703184371 ...
+
+  100MB more bytecode...
+  ```
 ]
 
 #slide[
@@ -124,15 +187,15 @@
 
   #align(center)[
     ```zig
-    const Expr = union(enum) { // tagged union
-        number: u64,
-        var_ref: []const u8,
-        print: *Expr,
-        add: Binary, sub: Binary,
-        mul: Binary, div: Binary,
-        assign: Binary,
-
-        const Binary = struct { lhs: *Expr, rhs: *Expr },
+    const Expr = struct {
+        kind: enum(u8) { ... },
+        data: union {
+            number: u64,
+            name: []const u8, // ptr + len
+            unary: *Expr,
+            binary: Binary,
+        },
+        const Binary = struct { lhs: *Expr, rhs: *Expr, };
 
         // recursive `free` (a lot of extra work!)
         fn deinit(self: *Expr, gpa: std.mem.Allocator) void { ... }
@@ -142,28 +205,88 @@
 ]
 
 #slide[
-  = Минутка арифметики
+  = Всё?
 
-  #align(center + horizon)[
-    #grid(
-      rows: (2em, 2em),
-      columns: (1cm, 7cm, 16cm),
-      stroke: (x, y) => if y == 0 { 1pt + fg-color },
-      `t`, grid.cell(fill: bg-color.lighten(40%), []), `data`,
-      [1], [7], [16],
+  Ну посчиталось всё за 1.3 секунды, ну и ладно
+
+  #only(2)[
+    #align(
+      center + horizon,
+      image(
+        "more-power.png",
+        height: 1fr,
+        fit: "contain",
+      ),
     )
   ]
 ]
 
 #slide[
-  #set align(center)
-  #image("not-all-cpu-operations-are-created-equal.webp", height: 100%)
+  = Что делать?
+
+  Алгоритмически решение простое, как палка. Что делать?
 ]
 
 #slide[
-  = Немного о кешах
+  = Тривиальная архитектура
 
-  #set align(center)
+  #set align(center + horizon)
+
+  #let diagram(ram-pos, arrow-label) = fletcher.diagram(
+    spacing: (1cm, 1cm),
+
+    edge-stroke: 1pt + fg-color,
+
+    node-stroke: 1pt + fg-color,
+    node-inset: 10pt,
+    node-fill: bg-color,
+
+    node((0, 0), `EU`, width: 5em, corner-radius: 1em, name: <cpu0>),
+    node((rel: (1, 0)), `EU`, width: 5em, corner-radius: 1em, name: <cpu1>),
+    node((rel: (1, 0)), `EU`, width: 5em, corner-radius: 1em, name: <cpu2>),
+    node((rel: (1, 0)), `EU`, width: 5em, corner-radius: 1em, name: <cpu3>),
+
+    node((0, ram-pos), stroke: none, width: 6em, name: <cpu0l2fake2>),
+    node((rel: (1, 0)), stroke: none, width: 6em, name: <cpu1l2fake2>),
+    node((rel: (1, 0)), stroke: none, width: 6em, name: <cpu2l2fake2>),
+    node((rel: (1, 0)), stroke: none, width: 6em, name: <cpu3l2fake2>),
+
+    node(
+      enclose: (
+        <cpu0>,
+        <cpu1>,
+        <cpu2>,
+        <cpu3>,
+      ),
+      name: <cpu>,
+      stroke: (paint: fg-color, dash: "dashed"),
+      inset: 0.7em,
+      fill: none,
+    ),
+
+    node(
+      enclose: (<cpu0l2fake2>, <cpu1l2fake2>, <cpu2l2fake2>, <cpu3l2fake2>),
+      name: <ram>,
+      `RAM`,
+      shape: fletcher.shapes.rect,
+      stroke: 1pt + fg-color,
+    ),
+
+    edge(<cpu0>, <cpu0l2fake2>, "<|-|>", label: arrow-label),
+    edge(<cpu1>, <cpu1l2fake2>, "<|-|>"),
+    edge(<cpu2>, <cpu2l2fake2>, "<|-|>"),
+    edge(<cpu3>, <cpu3l2fake2>, "<|-|>"),
+  )
+
+  #only(1, diagram(2, none))
+  #only(2, diagram(3.5, `100-150 cycles`))
+  #only(3, diagram(5, rotate(90deg, image("half-docker.png", width: 4cm))))
+]
+
+#slide[
+  = Настоящая архитектура
+
+  #set align(center + horizon)
 
   #fletcher.diagram(
     spacing: (1cm, 1cm),
@@ -177,12 +300,7 @@
     node((-1, 1), `L1`, stroke: none, fill: none, inset: 0pt),
     node((-1, 2), `L2`, stroke: none, fill: none, inset: 0pt),
     node((-1, 3), `L3`, stroke: none, fill: none, inset: 0pt),
-    node((-1, 4), `RAM`, stroke: none, fill: none, inset: 0pt),
-
-    node((0, -1), `Core 0`, stroke: none, fill: none, inset: 0pt),
-    node((1, -1), `Core 1`, stroke: none, fill: none, inset: 0pt),
-    node((2, -1), `Core 2`, stroke: none, fill: none, inset: 0pt),
-    node((3, -1), `Core 3`, stroke: none, fill: none, inset: 0pt),
+    node((-1, 5), `RAM`, stroke: none, fill: none, inset: 0pt),
 
     node((0, 0), `EU`, width: 5em, corner-radius: 1em, name: <cpu0>),
     node((rel: (1, 0)), `EU`, width: 5em, corner-radius: 1em, name: <cpu1>),
@@ -194,20 +312,10 @@
     node((rel: (1, 0)), `48K`, width: 3em, name: <cpu2l1>),
     node((rel: (1, 0)), `48K`, width: 3em, name: <cpu3l1>),
 
-    edge(<cpu0>, <cpu0l1>, "-|>"),
-    edge(<cpu1>, <cpu1l1>, "-|>"),
-    edge(<cpu2>, <cpu2l1>, "-|>"),
-    edge(<cpu3>, <cpu3l1>, "-|>"),
-
     node((0, 2), `1.3M`, width: 6em, name: <cpu0l2>),
     node((rel: (1, 0)), `1.3M`, width: 6em, name: <cpu1l2>),
     node((rel: (1, 0)), `1.3M`, width: 6em, name: <cpu2l2>),
     node((rel: (1, 0)), `1.3M`, width: 6em, name: <cpu3l2>),
-
-    edge(<cpu0l1>, <cpu0l2>, "-|>"),
-    edge(<cpu1l1>, <cpu1l2>, "-|>"),
-    edge(<cpu2l1>, <cpu2l2>, "-|>"),
-    edge(<cpu3l1>, <cpu3l2>, "-|>"),
 
     node(
       enclose: (<cpu0>, <cpu0l1>, <cpu0l2>),
@@ -248,17 +356,32 @@
       stroke: 1pt + fg-color,
     ),
 
-    edge(<cpu0l2>, <l3>, "-|>"),
-    edge(<cpu1l2>, <l3>, "-|>"),
-    edge(<cpu2l2>, <l3>, "-|>"),
-    edge(<cpu3l2>, <l3>, "-|>"),
-
-    node((0, 4), stroke: none, width: 6em, name: <cpu0l2fake2>),
+    node((0, 5), stroke: none, width: 6em, name: <cpu0l2fake2>),
     node((rel: (1, 0)), stroke: none, width: 6em, name: <cpu1l2fake2>),
     node((rel: (1, 0)), stroke: none, width: 6em, name: <cpu2l2fake2>),
     node((rel: (1, 0)), stroke: none, width: 6em, name: <cpu3l2fake2>),
 
-    edge(<l3>, <ram>, "-|>"),
+    node(
+      enclose: (
+        <cpu0>,
+        <cpu1>,
+        <cpu2>,
+        <cpu3>,
+        <cpu0l1>,
+        <cpu1l1>,
+        <cpu2l1>,
+        <cpu3l1>,
+        <cpu0l2>,
+        <cpu1l2>,
+        <cpu2l2>,
+        <cpu3l2>,
+        <l3>,
+      ),
+      name: <cpu>,
+      stroke: (paint: fg-color, dash: "dashed"),
+      inset: 0.7em,
+      fill: none,
+    ),
 
     node(
       enclose: (<cpu0l2fake2>, <cpu1l2fake2>, <cpu2l2fake2>, <cpu3l2fake2>),
@@ -269,16 +392,33 @@
     ),
   )
 ]
+#slide[
+  = Настоящая архитектура
+
+  #set align(center)
+
+  ```scala
+  T load(T* addr) {
+    if L1.contains(addr)   // 3/1048576 chance to hit
+      return L1.load(addr) // 3-4 cycles
+    
+    if L2.contains(addr)   // 13/163840 chance to hit
+      return L2.load(addr) // 10-12 cycles
+
+    if L3.contains(addr)   // 3/2048 chance to hit
+      return L3.load(addr) // 30-70 cycles
+
+    return RAM.load(addr)  // 100-150 cycles
+  }
+  ```
+]
 
 #slide[
   = Получается...
 
-  #one-by-one(start: 1)[
-    Мы раскидали по памяти немаленькие объекты.
-  ][
+  Мы раскидали по памяти немаленькие объекты
 
-    Можем ли мы лучше?
-  ][
+  Можем ли мы лучше? #only(2)[
     Конечно
     #align(center)[ #image("vergil-yamato.png", height: 1fr) ]
   ]
@@ -287,7 +427,7 @@
 #slide[
   = Действуем
 
-  Мы *раскидали* по памяти немаленькие объекты.
+  Мы _раскидали_ по памяти немаленькие объекты
 ]
 
 #slide[
@@ -297,46 +437,138 @@
 
   #let alive = grid.cell(fill: bg-color.lighten(40%), [])
   #let dead = grid.cell(fill: bg-color, [free])
+  #let columns = (3em, 2.5em, 3em, 1em, 2em, 4em, 3em, 2em, 2em, 5em, 3em)
 
-  #align(center, grid(
-    rows: (2em,),
-    columns: (3em, 2.5em, 3em, 1em, 2em, 4em, 3em, 2em, 2em, 5em, 3em),
-    inset: (x: 3em, y: 1em),
-    stroke: 1pt + fg-color,
-    alive, dead, alive, alive, alive, dead, dead, alive, dead, alive, alive,
-  ))
+  #let gpa(..are-alive) = {
+    let actual-columns = ()
+    let values = ()
+    let cur-column = 0em
+    for (i, v) in columns.enumerate() {
+      if are-alive.filter(x => x == i).len() != 0 {
+        if cur-column > 0em {
+          actual-columns.push(cur-column)
+          values.push(dead)
+        }
+        cur-column = 0em
+        actual-columns.push(v)
+        values.push(alive)
+      } else {
+        cur-column += v
+      }
+    }
 
-  #only("2-")[
-    Арена-аллокатор: // #footnote[В C++ есть `std::monotonic_buffer_resource`]:
+    if cur-column > 0em {
+      actual-columns.push(cur-column)
+      values.push(dead)
+    }
 
-    #align(center, grid(
+    align(center, grid(
       rows: (2em,),
-      columns: (3em, 3em, 1em, 2em, 2em, 5em, 3em, 11.5em),
+      columns: actual-columns,
       inset: (x: 3em, y: 1em),
       stroke: 1pt + fg-color,
-      alive, alive, alive, alive, alive, alive, alive, dead,
+      ..values,
     ))
-  ]
+  }
+
+  #alternatives(
+    repeat-last: true,
+    gpa(),
+    gpa(0),
+    gpa(0, 7),
+    gpa(0, 3, 7),
+    gpa(0, 3, 7, 9),
+    gpa(0, 3, 7, 9, 10),
+    gpa(0, 2, 3, 7, 9, 10),
+    gpa(0, 2, 3, 4, 7, 9, 10),
+  )
+
+  #let arena(..are-alive) = {
+    let actual-columns = ()
+    let values = ()
+
+    for i in range(are-alive.len()) {
+      let j = are-alive.at(i)
+      actual-columns.push(columns.at(j))
+      values.push(alive)
+    }
+
+    if actual-columns.len() < columns.len() {
+      actual-columns.push(columns.sum() - actual-columns.sum(default: 0em))
+      values.push(dead)
+    }
+
+    align(center, grid(
+      rows: (2em,),
+      columns: actual-columns,
+      inset: (x: 3em, y: 1em),
+      stroke: 1pt + fg-color,
+      ..values,
+    ))
+  }
+
+  #only("9-")[ Арена-аллокатор: ]
+  #alternatives(
+    start: 9,
+    repeat-last: true,
+    arena(),
+    arena(0),
+    arena(0, 7),
+    arena(0, 7, 3),
+    arena(0, 7, 3, 9),
+    arena(0, 7, 3, 9, 10),
+    arena(0, 7, 3, 9, 10, 2),
+    arena(0, 7, 3, 9, 10, 2, 4),
+  )
+
+  #only(17)[Та же память, но быстрее и плотнее]
 ]
 
 #slide[
   = Первые плоды
 
-  #figure(numbering: none, caption: [1.000.000 операций глубины не более 42], image(
-    "arena-bench.png",
-    width: 100%,
-    fit: "contain",
-  ))
+  #main-benchmark(2)
 ]
 
 #slide[
   = Действуем
 
-  #only(1)[
+  #alternatives[
     Мы #strike([раскидали]) по памяти немаленькие объекты
+  ][
+    Мы плотно разложили в памяти _немаленькие_ объекты
   ]
-  #only(2)[
-    Мы плотно разложили в памяти *немаленькие* объекты
+]
+
+#slide[
+  = Что делать?
+
+  Какого размера структура?
+
+  #align(center)[
+    ```zig
+    kind: enum(u8) { ... },
+    data: union {
+        number: u64,
+        name: []const u8, // ptr + len
+        unary: *Expr,
+        binary: Binary,   // ptr + ptr
+    },
+    ```
+  ]
+]
+
+#slide[
+  = Минутка арифметики
+
+  #align(center + horizon)[
+    #grid(
+      rows: (2em, 2em),
+      columns: (1cm, 7cm, 16cm),
+      stroke: (x, y) => if y == 0 { 1pt + fg-color },
+      `t`, grid.cell(fill: bg-color.lighten(40%), []), `data`,
+      [1], [7], [16],
+    )
   ]
 ]
 
@@ -345,9 +577,7 @@
 
   Посмотрим на реальные входные данные:
   - Выражений не больше, чем символов в файле
-  - Файл больше 4ГБ --- слишком много
-    #only(1, footnote[ввод для бенчмарка на прошлом слайде занимает \~100МБ])
-    $=>$ хватит 32 бит
+  - Файл больше 4ГБ --- слишком много $=>$ хватит 32 бит
 
   #only(2)[
     И сделаем выводы:
@@ -359,22 +589,39 @@
 #slide[
   = Сокращаем
 
-  #align(center)[
-    ```zig
-    const Expr = struct {
-      kind: enum(u8),
+  #only(1)[
+    #align(center)[
+      ```zig
+      const Expr = struct {
+          kind: enum(u8) { ... },
+          data: union {
+              number: u64,
+              name: Name,
+              unary: Expr.Index,
+              binary: Binary,
+          },
+        
+        const Index  = enum(u32) { _ };
+        const Name   = struct { begin: u32, len: u32 };
+        const Binary = struct { lhs: Expr.Index, rhs: Expr.Index };
+      };
+      ```
+    ]
+  ]
+
+  #only(2)[
+    Размер?
+    #align(center)[
+      ```zig
+      kind: enum(u8) { ... },
       data: union {
-        number: u64,
-        name: Name,
-        unary: Expr.Index,
-        binary: Binary,
+          number: u64,
+          name: Name,        // u32 + u32
+          unary: Expr.Index, // u32
+          binary: Binary,    // u32 + u32
       },
-      
-      const Index  = enum(u32) { _ };
-      const Name   = struct { begin: u32, len: u32 };
-      const Binary = struct { lhs: Expr.Index, rhs: Expr.Index };
-    };
-    ```
+      ```
+    ]
   ]
 ]
 
@@ -396,11 +643,7 @@
 #slide[
   = Сократили...
 
-  #figure(numbering: none, caption: [1.000.000 операций глубины не более 42], image(
-    "aos-naive-bench.png",
-    width: 100%,
-    fit: "contain",
-  ))
+  #main-benchmark(3)
 ]
 
 #slide[
@@ -429,7 +672,7 @@
 ]
 
 #slide[
-  = Путь первый: Struct of Arrays
+  = Путь первый
 
   #raw(lang: "zig", "std.ArrayList(Expr)")
   #align(center, grid(
@@ -455,21 +698,21 @@
       #let columns = 24
       #grid(
         rows: (1.3em, 1.3em),
-        columns: range(columns).map(_ => 1em) + (2em,),
+        columns: (4em,) + range(columns).map(_ => 1em) + (2em,),
         row-gutter: (0em, 1em, 0em, 1em),
-        stroke: (x, y) => if y == 0 and x < columns { 1pt + fg-color },
-        ..range(columns).map(_ => `t`), $dots.c.h$,
-        ..range(columns).map(_ => [1]), $dots.c.h$,
+        stroke: (x, y) => if y == 0 and x > 0 and x < columns + 1 { 1pt + fg-color },
+        `tags:`, ..range(columns).map(_ => `t`), $dots.c.h$,
+        [], ..range(columns).map(_ => [1]), $dots.c.h$,
       )
 
       #let columns = 3
       #grid(
         rows: (1.3em, 1.3em),
-        columns: range(columns).map(_ => 8em) + (2em,),
+        columns: (4em,) + range(columns).map(_ => 8em) + (2em,),
         row-gutter: (0em, 1em, 0em, 1em),
-        stroke: (x, y) => if y == 0 and x < columns { 1pt + fg-color },
-        ..range(columns).map(_ => `data`), $dots.c.h$,
-        ..range(columns).map(_ => [8]), $dots.c.h$,
+        stroke: (x, y) => if y == 0 and x > 0 and x < columns + 1 { 1pt + fg-color },
+        `data:`, ..range(columns).map(_ => `data`), $dots.c.h$,
+        [], ..range(columns).map(_ => [8]), $dots.c.h$,
       )
     ])
   ]
@@ -478,15 +721,11 @@
 #slide[
   = Путь первый: Struct of Arrays
 
-  #figure(numbering: none, caption: [1.000.000 операций глубины не более 42], image(
-    "soa-bench.png",
-    height: 77%,
-    fit: "contain",
-  ))
+  #main-benchmark(4)
 ]
 
 #slide[
-  = Путь второй: выравнивание
+  = Путь второй
 
   #set align(center + horizon)
 
@@ -509,31 +748,28 @@
 ]
 
 #slide[
-  = Путь второй: выравнивание
+  = Путь второй
 
   #set align(center + horizon)
 
-  #only(1)[
+  #alternatives[
     ```zig
     const Expr = struct {
-      kind: enum(u8),
-      data: union {
-        number: u64, // !!!
-        ...
-      },
+        kind: enum(u8) { ... },
+        data: union {
+            number: u64, // !!!
+            ...
+        },
     };
     ```
-  ]
-
-
-  #only(2)[
+  ][
     ```zig
     const Expr = struct {
-      kind: enum(u8),
-      data: union {
-        number: [2]u32, // :)
-        ...
-      },
+        kind: enum(u8) { ... },
+        data: union {
+            number: [2]u32, // :)
+            ...
+        },
     };
     ```
   ]
@@ -569,9 +805,11 @@
 
   #columns(2)[
     ```c
+    // b7 b6 b5 b4 | b3 b2 b1 b0
+    //     x[0]    |     x[1]
+
     u64 load(u32* x) {
-      u64 res = x[0];
-      res <<= 32;
+      u64 res = x[0] << 32;
       res |= x[1];
       return res;
     }
@@ -583,9 +821,11 @@
     ```
     #colbreak()
     ```c
+    // b7 b6 b5 b4 | b3 b2 b1 b0
+    //     x[1]    |     x[0]
+
     u64 load(u32* x) {
-      u64 res = x[1];
-      res <<= 32;
+      u64 res = x[1] << 32;
       res |= x[0];
       return res;
     }
@@ -604,20 +844,25 @@
   #set align(center)
   #columns(2)[
     ```asm
+    ; b7 b6 b5 b4 | b3 b2 b1 b0
+    ;     x[0]    |     x[1]
     load:
     mov ecx, dword ptr [rdi]
     mov eax, dword ptr [rdi + 4]
     shl rcx, 32
     or  rax, rcx
     ret
-
     store:
-    ror rsi, 32
-    mov qword ptr [rdi], rsi
+    mov dword ptr [rdi + 4], esi
+    shr rsi, 32
+    mov dword ptr [rdi], esi
     ret
     ```
     #colbreak()
     ```asm
+    ; b7 b6 b5 b4 | b3 b2 b1 b0
+    ;     x[1]    |     x[0]
+
     load:
     mov rax, qword ptr [rdi]
     ret
@@ -630,21 +875,139 @@
 ]
 
 #slide[
-  #figure(numbering: none, caption: [1.000.000 операций глубины не более 42], image(
-    "aos-bench.png",
-    width: 100%,
-    fit: "contain",
-  ))
+  = Всё вместе
+
+  #main-benchmark(5)
+]
+
+#slide[
+  = Прочие бенчмарки (1)
+
+  #benchmark(
+    [На 1.000.000 выражений со средней глубиной 2.54],
+    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
+    (red, green, blue, purple, orange),
+    (0.4174, 0.2936, 0.2646, 0.2708, 0.2507),
+  )
+]
+
+#slide[
+  = Прочие бенчмарки (2)
+
+  #benchmark(
+    [На 10.000.000 выражений глубины 3],
+    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
+    (red, green, blue, purple, orange),
+    (8.413, 7.679, 7.728, 8.089, 7.556),
+  )
+]
+
+#slide[
+  = Прочие бенчмарки (3)
+
+  #benchmark(
+    [На 8 выражениях глубины 26],
+    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
+    (red, green, blue, purple, orange),
+    (0.7409, 0.5565, 0.5328, 0.5715, 0.5237),
+  )
+]
+
+#slide[
+  = Альтернативная задача
+
+  Пусть теперь нам захотелось посчитать число обращений к переменным в программе.
+
+  #only(2)[
+    #columns(2)[
+      ```zig
+      fn count(expr: *Expr) u32 {
+        return switch (expr.kind) {
+          .var_ref => 1,
+          .binary =>
+            count(expr.lhs) +
+            count(expr.rhs),
+          ...
+        };
+      }
+      ```
+      #colbreak()
+      ```zig
+      for (exprs) |expr| {
+        count += @intFromBool(
+          expr.kind == .var_ref
+        );
+      }
+      ```
+    ]
+  ]
+]
+
+#slide[
+  = Альтернативная задача
+
+  Идея задачи в том, чтобы показать применение SoA.
+
+  #align(center, block[
+    #let columns = 24
+    #grid(
+      rows: (1.3em, 1.3em),
+      columns: (4em,) + range(columns).map(_ => 1em) + (2em,),
+      row-gutter: (0em, 1em, 0em, 1em),
+      stroke: (x, y) => if y == 0 and x > 0 and x < columns + 1 { 1pt + fg-color },
+      `tags:`, ..range(columns).map(_ => `t`), $dots.c.h$,
+      [], ..range(columns).map(_ => [1]), $dots.c.h$,
+    )
+
+    #let columns = 3
+    #grid(
+      rows: (1.3em, 1.3em),
+      columns: (4em,) + range(columns).map(_ => 8em) + (2em,),
+      row-gutter: (0em, 1em, 0em, 1em),
+      stroke: (x, y) => if y == 0 and x > 0 and x < columns + 1 { 1pt + fg-color },
+      `data:`, ..range(columns).map(_ => `data`), $dots.c.h$,
+      [], ..range(columns).map(_ => [8]), $dots.c.h$,
+    )
+  ])
+
+  Как всё классно укладывается в кеш и векторизуется. Посмотрим
+]
+
+#slide[
+  = Альт бенчмарки (1)
+
+  #benchmark(
+    [На 4.000.000 выражений глубины 3],
+    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
+    (red, green, blue, purple, orange),
+    (1.484, 0.951, 1.253, 1.103, 0.785),
+  )
+]
+
+#slide[
+  = Альт бенчмарки (2)
+
+  #benchmark(
+    [На 6 выражениях глубины 30],
+    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
+    (red, green, blue, purple, orange),
+    (2.463, 1.641, 2.319, 1.858, 1.549),
+  )
+]
+
+#slide[
+  #set page(footer: none, margin: 0em)
+  #align(center + horizon, image("reze-rain.jpg", height: 100%))
 ]
 
 #slide[
   = Takeaways
 
-  - Главная задача каждой программы --- преобразовать даннные
   - Плотно укладывать данные --- круто
   - Решения нужно принимать на основе реальных параметров
+  - Не всё, что блестит --- золото
   - Арены --- дешёвый способ выиграть производительность
-]
+  - ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ]
 
 #slide[
   = Further reading
@@ -653,13 +1016,11 @@
 
   #columns(2)[
     #figure(
-      numbering: none,
       caption: [Andrew Kelley: A Practical Guide to Applying Data Oriented Design (DoD)],
       qr("https://youtu.be/IroPQ150F6c", qr-width),
     )
     #colbreak()
     #figure(
-      numbering: none,
       caption: [CppCon 2014: Mike Acton "Data-Oriented Design and C++"],
       qr("https://youtu.be/rX0ItVEVjHc", qr-width),
     )
@@ -670,8 +1031,7 @@
   = Материалы
 
   #figure(
-    numbering: none,
-    caption: [GitHub репозиторий доклада],
+    caption: [GitHub-репозиторий доклада],
     qr("https://github.com/bo1led-owl/.text-dod", 10cm),
   )
 ]

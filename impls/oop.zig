@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const format = @import("format.zig");
+const bytecode = @import("bytecode");
 const config = @import("config");
 
 const ArenaAllocator = @import("ArenaAllocator.zig");
@@ -32,12 +32,12 @@ pub fn main() u8 {
     var program: Program = program: {
         const stdin = std.Io.File.stdin();
         var input_reader = stdin.reader(io, &in_buffer);
-        var decoder: format.Decoder = .{ .reader = &input_reader.interface };
+        const decoder: bytecode.Decoder = .{ .reader = &input_reader.interface };
         break :program readProgram(
             gpa,
             if (config.use_arena) arena.allocator() else gpa,
             if (config.use_arena) arena.allocator() else gpa,
-            &decoder,
+            decoder,
         ) catch |err| {
             std.log.err("failed to read program: {s}", .{@errorName(switch (err) {
                 error.ReadFailed => input_reader.err.?,
@@ -52,30 +52,52 @@ pub fn main() u8 {
     var stdout_writer = stdout.writerStreaming(io, &out_buffer);
     defer stdout_writer.flush() catch {};
 
-    var executor: Executor = .init(gpa, &stdout_writer.interface);
-    defer executor.deinit();
+    if (config.count_var_refs) {
+        var count: u32 = 0;
+        for (program.top_level_expressions) |expr| {
+            count += countVarRefs(expr);
+        }
+        stdout_writer.interface.print("{d} variable references\n", .{count}) catch return 1;
+    } else {
+        var executor: Executor = .init(gpa, &stdout_writer.interface);
+        defer executor.deinit();
 
-    for (program.top_level_expressions) |expr| {
-        _ = executor.executeExpr(expr) catch |err| {
-            std.log.err(
-                "failed to execute statement: {s}",
-                .{@errorName(switch (err) {
-                    error.WriteFailed => stdout_writer.err.?,
-                    else => err,
-                })},
-            );
-            return 1;
-        };
+        for (program.top_level_expressions) |expr| {
+            _ = executor.executeExpr(expr) catch |err| {
+                std.log.err(
+                    "failed to execute statement: {s}",
+                    .{@errorName(switch (err) {
+                        error.WriteFailed => stdout_writer.err.?,
+                        else => err,
+                    })},
+                );
+                return 1;
+            };
+        }
     }
 
     return 0;
+}
+
+fn countVarRefs(e: *const Expr) u32 {
+    return switch (e.kind) {
+        .number => 0,
+        .var_ref => 1,
+        .print => countVarRefs(e.data.operand),
+        .add,
+        .sub,
+        .mul,
+        .div,
+        .assign,
+        => countVarRefs(e.data.binary.lhs) + countVarRefs(e.data.binary.rhs),
+    };
 }
 
 fn readProgram(
     gpa: std.mem.Allocator,
     expr_allocator: std.mem.Allocator,
     name_allocator: std.mem.Allocator,
-    decoder: *format.Decoder,
+    decoder: bytecode.Decoder,
 ) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
     var top_level_expressions: std.ArrayList(*Expr) = .empty;
     errdefer top_level_expressions.deinit(gpa);
@@ -97,12 +119,13 @@ fn readProgram(
 fn readExpr(
     expr_allocator: std.mem.Allocator,
     name_allocator: std.mem.Allocator,
-    decoder: *format.Decoder,
+    decoder: bytecode.Decoder,
 ) !*Expr {
     const opcode = try decoder.readOpcode();
 
     const res = try expr_allocator.create(Expr);
-    res.* = switch (opcode) {
+    res.kind = opcode;
+    res.data = switch (opcode) {
         .number => .{ .number = try decoder.readNumber() },
         .var_ref => var_ref: {
             const len = try decoder.readVarNameLen();
@@ -110,24 +133,8 @@ fn readExpr(
             try decoder.readVarName(buf);
             break :var_ref .{ .var_ref = buf };
         },
-        .print => .{ .print = try readExpr(expr_allocator, name_allocator, decoder) },
-        .add => .{ .add = .{
-            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
-            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
-        } },
-        .sub => .{ .sub = .{
-            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
-            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
-        } },
-        .mul => .{ .mul = .{
-            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
-            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
-        } },
-        .div => .{ .div = .{
-            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
-            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
-        } },
-        .assign => .{ .assign = .{
+        .print => .{ .operand = try readExpr(expr_allocator, name_allocator, decoder) },
+        .add, .sub, .mul, .div, .assign => .{ .binary = .{
             .lhs = try readExpr(expr_allocator, name_allocator, decoder),
             .rhs = try readExpr(expr_allocator, name_allocator, decoder),
         } },
@@ -150,33 +157,35 @@ const Program = struct {
     }
 };
 
-const Expr = union(enum) {
-    number: u64,
-    var_ref: []const u8,
+const Expr = struct {
+    kind: bytecode.Opcode,
+    data: Data,
 
-    print: *Expr,
-
-    add: Binary,
-    sub: Binary,
-    mul: Binary,
-    div: Binary,
-    assign: Binary,
+    const Data = union {
+        number: u64,
+        var_ref: []const u8,
+        operand: *Expr,
+        binary: Binary,
+    };
 
     pub const Binary = struct { lhs: *Expr, rhs: *Expr };
 
     pub fn deinit(self: *Expr, gpa: std.mem.Allocator) void {
-        if (!config.use_arena) {
-            defer gpa.destroy(self);
+        if (config.use_arena) {
+            return;
+        }
 
-            switch (self.*) {
-                .print => |op| op.deinit(gpa),
-                .add, .sub, .mul, .div, .assign => |bin| {
-                    bin.lhs.deinit(gpa);
-                    bin.rhs.deinit(gpa);
-                },
-                .var_ref => |s| gpa.free(s),
-                .number => {},
-            }
+        defer self.* = undefined;
+        defer gpa.destroy(self);
+
+        switch (self.kind) {
+            .print => self.data.operand.deinit(gpa),
+            .add, .sub, .mul, .div, .assign => {
+                self.data.binary.lhs.deinit(gpa);
+                self.data.binary.rhs.deinit(gpa);
+            },
+            .var_ref => gpa.free(self.data.var_ref),
+            .number => {},
         }
     }
 };
@@ -200,29 +209,31 @@ pub const Executor = struct {
     }
 
     pub fn executeExpr(self: *Executor, expr: *const Expr) !u64 {
-        switch (expr.*) {
-            .assign => |data| {
-                switch (data.lhs.*) {
-                    .var_ref => |name| {
+        switch (expr.kind) {
+            .assign => {
+                const data = expr.data.binary;
+                switch (data.lhs.kind) {
+                    .var_ref => {
                         const value = try self.executeExpr(data.rhs);
-                        try self.variables.put(self.gpa, name, value);
+                        try self.variables.put(self.gpa, data.lhs.data.var_ref, value);
                         return value;
                     },
                     else => return error.ExpressionIsNotAssignable,
                 }
             },
-            .number => |value| return value,
-            .var_ref => |name| return self.variables.get(name) orelse error.UndefinedVariable,
-            .print => |operand| {
-                const value = try self.executeExpr(operand);
+            .number => return expr.data.number,
+            .var_ref => return self.variables.get(expr.data.var_ref) orelse error.UndefinedVariable,
+            .print => {
+                const value = try self.executeExpr(expr.data.operand);
                 try self.writer.print("{d}\n", .{value});
                 return value;
             },
-            .add, .sub, .mul, .div => |data| {
+            .add, .sub, .mul, .div => {
+                const data = expr.data.binary;
                 const lhs = try self.executeExpr(data.lhs);
                 const rhs = try self.executeExpr(data.rhs);
 
-                return switch (expr.*) {
+                return switch (expr.kind) {
                     .add => @addWithOverflow(lhs, rhs).@"0",
                     .sub => @subWithOverflow(lhs, rhs).@"0",
                     .mul => @mulWithOverflow(lhs, rhs).@"0",

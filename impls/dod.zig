@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const format = @import("format.zig");
+const bytecode = @import("bytecode");
 const config = @import("config");
 
 var out_buffer: [4096]u8 align(std.heap.page_size_min) = undefined;
@@ -27,8 +27,8 @@ pub fn main() u8 {
     var program: Program = program: {
         const stdin = std.Io.File.stdin();
         var input_reader = stdin.reader(io, &in_buffer);
-        var decoder: format.Decoder = .{ .reader = &input_reader.interface };
-        break :program readProgram(gpa, &decoder) catch |err| {
+        const decoder: bytecode.Decoder = .{ .reader = &input_reader.interface };
+        break :program readProgram(gpa, decoder) catch |err| {
             std.log.err("failed to read program: {s}", .{@errorName(switch (err) {
                 error.ReadFailed => input_reader.err.?,
                 else => err,
@@ -42,20 +42,52 @@ pub fn main() u8 {
     var stdout_writer = stdout.writerStreaming(io, &out_buffer);
     defer stdout_writer.flush() catch {};
 
-    var executor: Executor = .init(gpa, program, &stdout_writer.interface);
-    defer executor.deinit();
+    if (config.count_var_refs) {
+        var count: u32 = 0;
 
-    for (program.top_level_expressions) |expr| {
-        _ = executor.executeExpr(expr) catch |err| {
-            std.log.err(
-                "failed to execute statement: {s}",
-                .{@errorName(switch (err) {
-                    error.WriteFailed => stdout_writer.err.?,
-                    else => err,
-                })},
-            );
-            return 1;
-        };
+        if (!config.use_multiarraylist) {
+            for (program.expression_storage) |expr| {
+                count += @intFromBool(expr.kind == .var_ref);
+            }
+        } else {
+            const OpcodeRepr = @typeInfo(bytecode.Opcode).@"enum".tag_type;
+            const kinds: []const OpcodeRepr = @ptrCast(program.expression_storage.items(.kind));
+            const var_ref_repr: OpcodeRepr = @backingInt(bytecode.Opcode.var_ref);
+
+            var i: u32 = 0;
+
+            if (std.simd.suggestVectorLength(OpcodeRepr)) |vector_length| {
+                const V = @Vector(vector_length, OpcodeRepr);
+                const splat_var_ref: V = @splat(var_ref_repr);
+
+                while (i + vector_length <= kinds.len) : (i += vector_length) {
+                    const lane: V = kinds[i..][0..vector_length].*;
+                    count += std.simd.countTrues(lane == splat_var_ref);
+                }
+            }
+
+            while (i < kinds.len) : (i += 1) {
+                count += @intFromBool(kinds[i] == var_ref_repr);
+            }
+        }
+
+        stdout_writer.interface.print("{d} variable references\n", .{count}) catch return 1;
+    } else {
+        var executor: Executor = .init(gpa, program, &stdout_writer.interface);
+        defer executor.deinit();
+
+        for (program.top_level_expressions) |expr| {
+            _ = executor.executeExpr(expr) catch |err| {
+                std.log.err(
+                    "failed to execute statement: {s}",
+                    .{@errorName(switch (err) {
+                        error.WriteFailed => stdout_writer.err.?,
+                        else => err,
+                    })},
+                );
+                return 1;
+            };
+        }
     }
 
     return 0;
@@ -64,7 +96,7 @@ pub fn main() u8 {
 const ExprContainer = if (config.use_multiarraylist) std.MultiArrayList(Expr) else std.ArrayList(Expr);
 const ExprSlice = if (config.use_multiarraylist) std.MultiArrayList(Expr).Slice else []Expr;
 
-fn readProgram(gpa: std.mem.Allocator, decoder: *format.Decoder) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
+fn readProgram(gpa: std.mem.Allocator, decoder: bytecode.Decoder) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
     var names: std.ArrayList(u8) = .empty;
     var top_level_expressions: std.ArrayList(Expr.Index) = .empty;
     var expression_storage: ExprContainer = .empty;
@@ -96,7 +128,7 @@ fn readExpr(
     gpa: std.mem.Allocator,
     names: *std.ArrayList(u8),
     expression_storage: *ExprContainer,
-    decoder: *format.Decoder,
+    decoder: bytecode.Decoder,
 ) !Expr.Index {
     const opcode = try decoder.readOpcode();
     const data: Expr.Data = switch (opcode) {
@@ -145,7 +177,7 @@ const Program = struct {
 };
 
 const Expr = struct {
-    kind: format.Opcode,
+    kind: bytecode.Opcode,
     data: Data,
 
     pub const Index = enum(u32) {
