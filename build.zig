@@ -18,6 +18,31 @@ pub fn build(b: *std.Build) !void {
     _ = setupDisassembler(b, target, optimize, bytecode);
     const generator = setupGenerator(b, target, optimize, bytecode);
 
+    const input_patterns: []const InputPattern = &.{
+        .{
+            .name = "small-exprs",
+            .seed = 394852010190109754,
+            .n_statements = 5_000_000,
+            .max_statement_depth = 3,
+            .random_depths = false,
+        },
+        .{
+            // avg depth: 12.6
+            .name = "random-depths",
+            .seed = 592532456724845655,
+            .n_statements = 150_000,
+            .max_statement_depth = 512,
+            .random_depths = true,
+        },
+        .{
+            .name = "large-exprs",
+            .seed = 4278276976286587,
+            .n_statements = 16,
+            .max_statement_depth = 27,
+            .random_depths = false,
+        },
+    };
+
     // execution benchmark
     try setupBenchmark(
         b,
@@ -36,50 +61,26 @@ pub fn build(b: *std.Build) !void {
                 .{ "use_multiarraylist", false },
                 .{ "use_u64", true },
                 .{ "count_var_refs", false },
+                .{ "preprocessed", false },
+                .{ "preprocessor", false },
             } },
             .{ b.path("impls/dod.zig"), "soa", &.{
                 .{ "use_multiarraylist", true },
                 .{ "use_u64", true },
                 .{ "count_var_refs", false },
+                .{ "preprocessed", false },
+                .{ "preprocessor", false },
             } },
             .{ b.path("impls/dod.zig"), "aos-compact", &.{
                 .{ "use_multiarraylist", false },
                 .{ "use_u64", false },
                 .{ "count_var_refs", false },
+                .{ "preprocessed", false },
+                .{ "preprocessor", false },
             } },
+            .{ b.path("impls/encoding.zig"), "arena-tight", &.{.{ "count_var_refs", false }} },
         }),
-        &.{
-            .{
-                // avg depth: 2.54
-                .name = "small-exprs",
-                .seed = 394852010190109754,
-                .n_statements = 1_000_000,
-                .max_statement_depth = 4,
-                .random_depths = true,
-            },
-            .{
-                // avg depth: 12.6
-                .name = "random-depths",
-                .seed = 592532456724845655,
-                .n_statements = 100_000,
-                .max_statement_depth = 512,
-                .random_depths = true,
-            },
-            .{
-                .name = "lots-of-exprs",
-                .seed = 1674846731856312,
-                .n_statements = 10_000_000,
-                .max_statement_depth = 3,
-                .random_depths = false,
-            },
-            .{
-                .name = "large-exprs",
-                .seed = 4278276976286587,
-                .n_statements = 8,
-                .max_statement_depth = 26,
-                .random_depths = false,
-            },
-        },
+        input_patterns,
     );
 
     // var ref count benchmark
@@ -96,38 +97,80 @@ pub fn build(b: *std.Build) !void {
                 .{ "use_arena", true },
                 .{ "count_var_refs", true },
             } },
-            .{ b.path("impls/dod.zig"), "aos-counter", &.{
-                .{ "use_multiarraylist", false },
-                .{ "use_u64", true },
-                .{ "count_var_refs", true },
-            } },
-            .{ b.path("impls/dod.zig"), "soa-counter", &.{
-                .{ "use_multiarraylist", true },
-                .{ "use_u64", true },
-                .{ "count_var_refs", true },
-            } },
-            .{ b.path("impls/dod.zig"), "aos-compact-counter", &.{
-                .{ "use_multiarraylist", false },
-                .{ "use_u64", false },
-                .{ "count_var_refs", true },
-            } },
+            .{ b.path("impls/encoding.zig"), "arena-tight-counter", &.{.{ "count_var_refs", true }} },
         }),
-        &.{
-            .{
-                .name = "lots",
-                .seed = 1674846731856312,
-                .n_statements = 4_000_000,
-                .max_statement_depth = 3,
-                .random_depths = false,
-            },
-            .{
-                .name = "large",
-                .seed = 4278276976286587,
-                .n_statements = 6,
-                .max_statement_depth = 30,
-                .random_depths = false,
-            },
-        },
+        input_patterns,
+    );
+
+    _ = try setupImplementations(b, target, optimize, bytecode, &.{
+        .{ b.path("impls/dod.zig"), "aos-preprocessor", &.{
+            .{ "use_multiarraylist", false },
+            .{ "use_u64", true },
+            .{ "preprocessor", true },
+            .{ "preprocessed", false },
+        } },
+        .{ b.path("impls/dod.zig"), "soa-preprocessor", &.{
+            .{ "use_multiarraylist", true },
+            .{ "use_u64", true },
+            .{ "preprocessor", true },
+            .{ "preprocessed", false },
+        } },
+        .{ b.path("impls/dod.zig"), "aos-compact-preprocessor", &.{
+            .{ "use_multiarraylist", false },
+            .{ "use_u64", false },
+            .{ "preprocessor", true },
+            .{ "preprocessed", false },
+        } },
+    });
+
+    _ = try setupImplementations(b, target, optimize, bytecode, &.{
+        .{ b.path("impls/dod.zig"), "aos-preprocessed", &.{
+            .{ "use_multiarraylist", false },
+            .{ "use_u64", true },
+            .{ "preprocessor", false },
+            .{ "preprocessed", true },
+            .{ "count_var_refs", false },
+        } },
+        .{ b.path("impls/dod.zig"), "soa-preprocessed", &.{
+            .{ "use_multiarraylist", true },
+            .{ "use_u64", true },
+            .{ "preprocessor", false },
+            .{ "preprocessed", true },
+            .{ "count_var_refs", false },
+        } },
+        .{ b.path("impls/dod.zig"), "aos-compact-preprocessed", &.{
+            .{ "use_multiarraylist", false },
+            .{ "use_u64", false },
+            .{ "preprocessor", false },
+            .{ "preprocessed", true },
+            .{ "count_var_refs", false },
+        } },
+    });
+
+    _ = try setupImplementations(
+        b,
+        target,
+        optimize,
+        bytecode,
+        &.{ .{ b.path("impls/dod.zig"), "aos-counter", &.{
+            .{ "use_multiarraylist", false },
+            .{ "use_u64", true },
+            .{ "count_var_refs", true },
+            .{ "preprocessor", false },
+            .{ "preprocessed", true },
+        } }, .{ b.path("impls/dod.zig"), "soa-counter", &.{
+            .{ "use_multiarraylist", true },
+            .{ "use_u64", true },
+            .{ "count_var_refs", true },
+            .{ "preprocessor", false },
+            .{ "preprocessed", true },
+        } }, .{ b.path("impls/dod.zig"), "aos-compact-counter", &.{
+            .{ "use_multiarraylist", false },
+            .{ "use_u64", false },
+            .{ "count_var_refs", true },
+            .{ "preprocessor", false },
+            .{ "preprocessed", true },
+        } } },
     );
 }
 

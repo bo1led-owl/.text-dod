@@ -93,27 +93,45 @@ const Expr = union(bytecode.Opcode) {
 };
 
 const Assembler = struct {
+    gpa: std.mem.Allocator,
     reader: *std.Io.Reader,
     encoder: bytecode.Encoder,
     line_writer: std.Io.Writer.Allocating,
+    name_arena: std.heap.ArenaAllocator,
+    variables: std.StringHashMapUnmanaged(u32),
+    cur_var: u32,
 
     pub fn init(gpa: std.mem.Allocator, reader: *std.Io.Reader, encoder: bytecode.Encoder) Assembler {
-        return .{ .reader = reader, .encoder = encoder, .line_writer = .init(gpa) };
+        return .{
+            .gpa = gpa,
+            .reader = reader,
+            .encoder = encoder,
+            .line_writer = .init(gpa),
+            .name_arena = .init(gpa),
+            .variables = .empty,
+            .cur_var = 0,
+        };
     }
 
     pub fn deinit(self: *Assembler) void {
         defer self.* = undefined;
         self.line_writer.deinit();
+        self.name_arena.deinit();
     }
 
     pub fn run(self: *Assembler) !void {
         var running = true;
         while (running) {
-            running = try self.preprocessExpr();
+            running = try self.assembleExpr();
         }
     }
 
-    fn preprocessExpr(self: *Assembler) !bool {
+    fn nextVar(self: *Assembler) u32 {
+        defer self.cur_var += 1;
+        return self.cur_var;
+    }
+
+    fn assembleExpr(self: *Assembler) !bool {
         self.line_writer.clearRetainingCapacity();
 
         _ = self.reader.streamDelimiterEnding(&self.line_writer.writer, '\n') catch |err|
@@ -129,7 +147,7 @@ const Assembler = struct {
         const input = self.line_writer.written();
         var cursor = std.mem.splitAny(u8, input, &std.ascii.whitespace);
 
-        const res = try self.preprocessExprInternal(&cursor);
+        const res = try self.assembleExprInternal(&cursor, false);
 
         while (cursor.next()) |item| {
             if (item.len != 0) {
@@ -139,7 +157,11 @@ const Assembler = struct {
         return res;
     }
 
-    fn preprocessExprInternal(self: *Assembler, cursor: *std.mem.SplitIterator(u8, .any)) !bool {
+    fn assembleExprInternal(
+        self: *Assembler,
+        cursor: *std.mem.SplitIterator(u8, .any),
+        assign_lhs: bool,
+    ) !bool {
         const item = while (cursor.next()) |item| {
             if (item.len != 0) {
                 break item;
@@ -159,10 +181,10 @@ const Assembler = struct {
                     else => unreachable,
                 });
 
-                if (!try self.preprocessExprInternal(cursor)) {
+                if (!try self.assembleExprInternal(cursor, c == '=')) {
                     return error.IncompleteExpression;
                 }
-                if (!try self.preprocessExprInternal(cursor)) {
+                if (!try self.assembleExprInternal(cursor, false)) {
                     return error.IncompleteExpression;
                 }
             } else {
@@ -170,7 +192,7 @@ const Assembler = struct {
             },
             else => |first_char| if (std.mem.eql(u8, item, "print")) {
                 try self.encoder.writeOpcode(.print);
-                if (!try self.preprocessExprInternal(cursor)) {
+                if (!try self.assembleExprInternal(cursor, false)) {
                     return error.IncompleteExpression;
                 }
             } else if (std.ascii.isDigit(first_char)) {
@@ -183,7 +205,16 @@ const Assembler = struct {
                 try self.encoder.writeNumber(value);
             } else if (first_char == '_' or std.ascii.isAlphabetic(first_char)) {
                 try self.encoder.writeOpcode(.var_ref);
-                try self.encoder.writeVarName(item);
+                const var_idx = if (self.variables.get(item)) |idx|
+                    idx
+                else if (assign_lhs) put_var: {
+                    const idx = self.nextVar();
+                    try self.variables.put(self.gpa, try self.name_arena.allocator().dupe(u8, item), idx);
+                    break :put_var idx;
+                } else {
+                    return error.UndefinedVariable;
+                };
+                try self.encoder.writeVarName(var_idx);
             } else {
                 return error.InvalidCharacter;
             },

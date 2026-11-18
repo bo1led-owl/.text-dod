@@ -29,6 +29,7 @@ pub fn main() u8 {
     var arena: ArenaAllocator = .init(gpa);
     defer arena.deinit();
 
+    var last_var: u64 = 0;
     var program: Program = program: {
         const stdin = std.Io.File.stdin();
         var input_reader = stdin.reader(io, &in_buffer);
@@ -36,8 +37,8 @@ pub fn main() u8 {
         break :program readProgram(
             gpa,
             if (config.use_arena) arena.allocator() else gpa,
-            if (config.use_arena) arena.allocator() else gpa,
             decoder,
+            &last_var,
         ) catch |err| {
             std.log.err("failed to read program: {s}", .{@errorName(switch (err) {
                 error.ReadFailed => input_reader.err.?,
@@ -53,15 +54,19 @@ pub fn main() u8 {
     defer stdout_writer.flush() catch {};
 
     if (config.count_var_refs) {
-        var count: u32 = 0;
+        var count: u64 = 0;
         for (program.top_level_expressions) |expr| {
             count += countVarRefs(expr);
         }
         stdout_writer.interface.print("{d} variable references\n", .{count}) catch return 1;
     } else {
-        var executor: Executor = .init(gpa, &stdout_writer.interface);
-        defer executor.deinit();
+        const var_buffer: []u64 = gpa.alloc(u64, last_var + 1) catch {
+            std.log.err("failed to allocate variable storage: out of memory", .{});
+            return 1;
+        };
+        defer gpa.free(var_buffer);
 
+        var executor: Executor = .init(&stdout_writer.interface, var_buffer);
         for (program.top_level_expressions) |expr| {
             _ = executor.executeExpr(expr) catch |err| {
                 std.log.err(
@@ -79,7 +84,7 @@ pub fn main() u8 {
     return 0;
 }
 
-fn countVarRefs(e: *const Expr) u32 {
+fn countVarRefs(e: *const Expr) u64 {
     return switch (e.kind) {
         .number => 0,
         .var_ref => 1,
@@ -96,14 +101,14 @@ fn countVarRefs(e: *const Expr) u32 {
 fn readProgram(
     gpa: std.mem.Allocator,
     expr_allocator: std.mem.Allocator,
-    name_allocator: std.mem.Allocator,
     decoder: bytecode.Decoder,
+    last_var: *u64,
 ) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
     var top_level_expressions: std.ArrayList(*Expr) = .empty;
     errdefer top_level_expressions.deinit(gpa);
 
     while (true) {
-        const expr = readExpr(expr_allocator, name_allocator, decoder) catch |err| switch (err) {
+        const expr = readExpr(expr_allocator, decoder, last_var) catch |err| switch (err) {
             error.EndOfStream => break,
             else => |e| return e,
         };
@@ -116,11 +121,7 @@ fn readProgram(
     };
 }
 
-fn readExpr(
-    expr_allocator: std.mem.Allocator,
-    name_allocator: std.mem.Allocator,
-    decoder: bytecode.Decoder,
-) !*Expr {
+fn readExpr(expr_allocator: std.mem.Allocator, decoder: bytecode.Decoder, last_var: *u64) !*Expr {
     const opcode = try decoder.readOpcode();
 
     const res = try expr_allocator.create(Expr);
@@ -128,15 +129,14 @@ fn readExpr(
     res.data = switch (opcode) {
         .number => .{ .number = try decoder.readNumber() },
         .var_ref => var_ref: {
-            const len = try decoder.readVarNameLen();
-            const buf = try name_allocator.alloc(u8, len);
-            try decoder.readVarName(buf);
-            break :var_ref .{ .var_ref = buf };
+            const name = try decoder.readVarName();
+            last_var.* = @max(last_var.*, name);
+            break :var_ref .{ .var_ref = name };
         },
-        .print => .{ .operand = try readExpr(expr_allocator, name_allocator, decoder) },
+        .print => .{ .operand = try readExpr(expr_allocator, decoder, last_var) },
         .add, .sub, .mul, .div, .assign => .{ .binary = .{
-            .lhs = try readExpr(expr_allocator, name_allocator, decoder),
-            .rhs = try readExpr(expr_allocator, name_allocator, decoder),
+            .lhs = try readExpr(expr_allocator, decoder, last_var),
+            .rhs = try readExpr(expr_allocator, decoder, last_var),
         } },
     };
 
@@ -163,7 +163,7 @@ const Expr = struct {
 
     const Data = union {
         number: u64,
-        var_ref: []const u8,
+        var_ref: u64,
         operand: *Expr,
         binary: Binary,
     };
@@ -184,28 +184,20 @@ const Expr = struct {
                 self.data.binary.lhs.deinit(gpa);
                 self.data.binary.rhs.deinit(gpa);
             },
-            .var_ref => gpa.free(self.data.var_ref),
-            .number => {},
+            .var_ref, .number => {},
         }
     }
 };
 
 pub const Executor = struct {
-    gpa: std.mem.Allocator,
     writer: *std.Io.Writer,
-    variables: std.StringHashMapUnmanaged(u64),
+    variables: []u64,
 
-    pub fn init(gpa: std.mem.Allocator, writer: *std.Io.Writer) Executor {
+    pub fn init(writer: *std.Io.Writer, var_buffer: []u64) Executor {
         return .{
-            .gpa = gpa,
             .writer = writer,
-            .variables = .empty,
+            .variables = var_buffer,
         };
-    }
-
-    pub fn deinit(self: *Executor) void {
-        defer self.* = undefined;
-        self.variables.deinit(self.gpa);
     }
 
     pub fn executeExpr(self: *Executor, expr: *const Expr) !u64 {
@@ -215,14 +207,14 @@ pub const Executor = struct {
                 switch (data.lhs.kind) {
                     .var_ref => {
                         const value = try self.executeExpr(data.rhs);
-                        try self.variables.put(self.gpa, data.lhs.data.var_ref, value);
+                        self.variables[data.lhs.data.var_ref] = value;
                         return value;
                     },
                     else => return error.ExpressionIsNotAssignable,
                 }
             },
             .number => return expr.data.number,
-            .var_ref => return self.variables.get(expr.data.var_ref) orelse error.UndefinedVariable,
+            .var_ref => return self.variables[expr.data.var_ref],
             .print => {
                 const value = try self.executeExpr(expr.data.operand);
                 try self.writer.print("{d}\n", .{value});

@@ -79,8 +79,8 @@ fn disExpr(decoder: bytecode.Decoder, writer: *std.Io.Writer) !void {
             try writer.printInt(num, 10, .lower, .{});
         },
         .var_ref => {
-            const len = try decoder.readVarNameLen();
-            try decoder.reader.streamExact(writer, len);
+            const var_name = try decoder.readVarName();
+            try writer.print("v{d}", .{var_name});
         },
         .print => try disExpr(decoder, writer),
         .add, .sub, .mul, .div, .assign => {

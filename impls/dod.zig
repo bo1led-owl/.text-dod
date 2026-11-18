@@ -24,11 +24,12 @@ pub fn main() u8 {
     var io_impl = std.Io.Threaded.init_single_threaded;
     const io = io_impl.io();
 
+    var last_var: u64 = 0;
     var program: Program = program: {
         const stdin = std.Io.File.stdin();
         var input_reader = stdin.reader(io, &in_buffer);
         const decoder: bytecode.Decoder = .{ .reader = &input_reader.interface };
-        break :program readProgram(gpa, decoder) catch |err| {
+        break :program readProgram(gpa, decoder, &last_var) catch |err| {
             std.log.err("failed to read program: {s}", .{@errorName(switch (err) {
                 error.ReadFailed => input_reader.err.?,
                 else => err,
@@ -42,8 +43,16 @@ pub fn main() u8 {
     var stdout_writer = stdout.writerStreaming(io, &out_buffer);
     defer stdout_writer.flush() catch {};
 
-    if (config.count_var_refs) {
-        var count: u32 = 0;
+    if (config.preprocessor) {
+        dumpProgram(&stdout_writer.interface, program, last_var) catch |err| {
+            const err_msg = switch (err) {
+                error.WriteFailed => @errorName(stdout_writer.err.?),
+            };
+            std.log.err("failed to dump: {s}", .{err_msg});
+            return 1;
+        };
+    } else if (config.count_var_refs) {
+        var count: u64 = 0;
 
         if (!config.use_multiarraylist) {
             for (program.expression_storage) |expr| {
@@ -73,9 +82,13 @@ pub fn main() u8 {
 
         stdout_writer.interface.print("{d} variable references\n", .{count}) catch return 1;
     } else {
-        var executor: Executor = .init(gpa, program, &stdout_writer.interface);
-        defer executor.deinit();
+        const var_buffer: []u64 = gpa.alloc(u64, last_var + 1) catch {
+            std.log.err("failed to allocate variable storage: out of memory", .{});
+            return 1;
+        };
+        defer gpa.free(var_buffer);
 
+        var executor: Executor = .init(program, &stdout_writer.interface, var_buffer);
         for (program.top_level_expressions) |expr| {
             _ = executor.executeExpr(expr) catch |err| {
                 std.log.err(
@@ -96,39 +109,115 @@ pub fn main() u8 {
 const ExprContainer = if (config.use_multiarraylist) std.MultiArrayList(Expr) else std.ArrayList(Expr);
 const ExprSlice = if (config.use_multiarraylist) std.MultiArrayList(Expr).Slice else []Expr;
 
-fn readProgram(gpa: std.mem.Allocator, decoder: bytecode.Decoder) error{ OutOfMemory, InvalidEnumTag, ReadFailed }!Program {
-    var names: std.ArrayList(u8) = .empty;
-    var top_level_expressions: std.ArrayList(Expr.Index) = .empty;
-    var expression_storage: ExprContainer = .empty;
-
-    errdefer names.deinit(gpa);
-    errdefer top_level_expressions.deinit(gpa);
-    errdefer expression_storage.deinit(gpa);
-
-    while (true) {
-        const expr = readExpr(gpa, &names, &expression_storage, decoder) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => |e| return e,
+fn dumpProgram(writer: *std.Io.Writer, program: Program, last_var: u64) !void {
+    if (config.use_multiarraylist) {
+        var parts = [_][]const u8{
+            std.mem.asBytes(&last_var),
+            std.mem.asBytes(&program.top_level_expressions.len),
+            std.mem.asBytes(&program.expression_storage.len),
+            std.mem.sliceAsBytes(program.top_level_expressions),
+            std.mem.sliceAsBytes(program.expression_storage.items(.kind)),
+            std.mem.sliceAsBytes(program.expression_storage.items(.data)),
         };
 
-        try top_level_expressions.append(gpa, expr);
-    }
+        try writer.writeVecAll(&parts);
+    } else {
+        var parts = [_][]const u8{
+            std.mem.asBytes(&last_var),
+            std.mem.asBytes(&program.top_level_expressions.len),
+            std.mem.asBytes(&program.expression_storage.len),
+            std.mem.sliceAsBytes(program.top_level_expressions),
+            std.mem.sliceAsBytes(program.expression_storage),
+        };
 
-    return .{
-        .names = try names.toOwnedSlice(gpa),
-        .top_level_expressions = try top_level_expressions.toOwnedSlice(gpa),
-        .expression_storage = if (config.use_multiarraylist)
-            expression_storage.toOwnedSlice()
-        else
-            try expression_storage.toOwnedSlice(gpa),
-    };
+        try writer.writeVecAll(&parts);
+    }
+}
+
+fn readProgram(gpa: std.mem.Allocator, decoder: bytecode.Decoder, last_var: *u64) !Program {
+    if (config.preprocessed) {
+        const reader = decoder.reader;
+
+        var top_level_expressions_len: usize = undefined;
+        var expression_storage_len: usize = undefined;
+        var header = [_][]u8{
+            std.mem.asBytes(last_var),
+            std.mem.asBytes(&top_level_expressions_len),
+            std.mem.asBytes(&expression_storage_len),
+        };
+        try reader.readVecAll(&header);
+
+        const top_level_expressions = try gpa.alloc(u32, top_level_expressions_len);
+        errdefer gpa.free(top_level_expressions);
+
+        var expression_storage = if (config.use_multiarraylist) multi: {
+            var list = try ExprContainer.initCapacity(gpa, expression_storage_len);
+            list.len = expression_storage_len;
+            break :multi list.toOwnedSlice();
+        } else try gpa.alloc(Expr, expression_storage_len);
+        errdefer if (config.use_multiarraylist) expression_storage.deinit(gpa) else gpa.free(expression_storage);
+
+        if (config.use_multiarraylist and !config.count_var_refs) {
+            var parts = [_][]u8{
+                std.mem.sliceAsBytes(top_level_expressions),
+                std.mem.sliceAsBytes(expression_storage.items(.kind)),
+                std.mem.sliceAsBytes(expression_storage.items(.data)),
+            };
+            try reader.readVecAll(&parts);
+        } else if (config.use_multiarraylist and config.count_var_refs) {
+            var parts = [_][]u8{
+                std.mem.sliceAsBytes(top_level_expressions),
+                std.mem.sliceAsBytes(expression_storage.items(.kind)),
+            };
+            try reader.readVecAll(&parts);
+        } else {
+            var parts = [_][]u8{
+                std.mem.sliceAsBytes(top_level_expressions),
+                std.mem.sliceAsBytes(expression_storage),
+            };
+            try reader.readVecAll(&parts);
+        }
+
+        return .{
+            .top_level_expressions = @ptrCast(top_level_expressions),
+            .expression_storage = expression_storage,
+        };
+    } else {
+        var top_level_expressions: std.ArrayList(Expr.Index) = .empty;
+        var expression_storage: ExprContainer = .empty;
+
+        errdefer top_level_expressions.deinit(gpa);
+        errdefer expression_storage.deinit(gpa);
+
+        while (true) {
+            const expr = readExpr(
+                gpa,
+                &expression_storage,
+                decoder,
+                last_var,
+            ) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => |e| return e,
+            };
+
+            try top_level_expressions.append(gpa, expr);
+        }
+
+        return .{
+            .top_level_expressions = try top_level_expressions.toOwnedSlice(gpa),
+            .expression_storage = if (config.use_multiarraylist)
+                expression_storage.toOwnedSlice()
+            else
+                try expression_storage.toOwnedSlice(gpa),
+        };
+    }
 }
 
 fn readExpr(
     gpa: std.mem.Allocator,
-    names: *std.ArrayList(u8),
     expression_storage: *ExprContainer,
     decoder: bytecode.Decoder,
+    last_var: *u64,
 ) !Expr.Index {
     const opcode = try decoder.readOpcode();
     const data: Expr.Data = switch (opcode) {
@@ -140,17 +229,17 @@ fn readExpr(
                 [2]u32{ @truncate(num64), @truncate(num64 >> 32) };
         } },
         .var_ref => var_ref: {
-            const len = try decoder.readVarNameLen();
-            const prev_len = names.items.len;
-            try names.resize(gpa, prev_len + len);
-            const buf = names.items[prev_len..];
-            try decoder.readVarName(buf);
-            break :var_ref .{ .name = .{ .begin = @intCast(prev_len), .len = @intCast(len) } };
+            const name = try decoder.readVarName();
+            last_var.* = @max(last_var.*, name);
+            break :var_ref .{ .var_ref = if (config.use_u64)
+                name
+            else
+                [2]u32{ @truncate(name), @truncate(name >> 32) } };
         },
-        .print => .{ .unary = try readExpr(gpa, names, expression_storage, decoder) },
+        .print => .{ .unary = try readExpr(gpa, expression_storage, decoder, last_var) },
         .add, .sub, .mul, .div, .assign => .{ .binary = .{
-            .lhs = try readExpr(gpa, names, expression_storage, decoder),
-            .rhs = try readExpr(gpa, names, expression_storage, decoder),
+            .lhs = try readExpr(gpa, expression_storage, decoder, last_var),
+            .rhs = try readExpr(gpa, expression_storage, decoder, last_var),
         } },
     };
 
@@ -160,12 +249,10 @@ fn readExpr(
 }
 
 const Program = struct {
-    names: []const u8,
     top_level_expressions: []const Expr.Index,
     expression_storage: ExprSlice,
 
     pub fn deinit(self: *Program, gpa: std.mem.Allocator) void {
-        gpa.free(self.names);
         gpa.free(self.top_level_expressions);
 
         if (config.use_multiarraylist) {
@@ -180,6 +267,13 @@ const Expr = struct {
     kind: bytecode.Opcode,
     data: Data,
 
+    pub const Data = union(enum) {
+        number: if (config.use_u64) u64 else [2]u32,
+        var_ref: if (config.use_u64) u64 else [2]u32,
+        unary: Expr.Index,
+        binary: Binary,
+    };
+
     pub const Index = enum(u32) {
         _,
 
@@ -188,60 +282,24 @@ const Expr = struct {
         }
     };
 
-    pub const Name = struct { begin: u32, len: u32 };
     pub const Binary = struct { lhs: Expr.Index, rhs: Expr.Index };
-
-    pub const Data = union(enum) {
-        number: if (config.use_u64) u64 else [2]u32,
-        name: Name,
-        unary: Expr.Index,
-        binary: Binary,
-    };
 };
 
 pub const Executor = struct {
-    gpa: std.mem.Allocator,
     writer: *std.Io.Writer,
     expressions: ExprSlice,
-    variables: std.HashMapUnmanaged(Expr.Name, u64, Context, std.hash_map.default_max_load_percentage),
-    map_ctx: Context,
-
-    const Context = struct {
-        name_arena: []const u8,
-
-        fn extractName(self: Context, begin: u32, len: u32) []const u8 {
-            return self.name_arena[begin..][0..len];
-        }
-
-        pub fn hash(self: Context, name: Expr.Name) u64 {
-            const str = self.extractName(name.begin, name.len);
-            return std.hash.Wyhash.hash(0, str);
-        }
-
-        pub fn eql(self: Context, a: Expr.Name, b: Expr.Name) bool {
-            const str_a = self.extractName(a.begin, a.len);
-            const str_b = self.extractName(b.begin, b.len);
-            return std.mem.eql(u8, str_a, str_b);
-        }
-    };
+    variables: []u64,
 
     pub fn init(
-        gpa: std.mem.Allocator,
         program: Program,
         writer: *std.Io.Writer,
+        var_buffer: []u64,
     ) Executor {
         return .{
-            .gpa = gpa,
             .writer = writer,
             .expressions = program.expression_storage,
-            .variables = .empty,
-            .map_ctx = .{ .name_arena = program.names },
+            .variables = var_buffer,
         };
-    }
-
-    pub fn deinit(self: *Executor) void {
-        defer self.* = undefined;
-        self.variables.deinit(self.gpa);
     }
 
     pub fn executeExpr(self: *Executor, expr_index: Expr.Index) !u64 {
@@ -261,7 +319,11 @@ pub const Executor = struct {
                 switch (lhs.kind) {
                     .var_ref => {
                         const value = try self.executeExpr(data.rhs);
-                        try self.variables.putContext(self.gpa, lhs.data.name, value, self.map_ctx);
+                        const name = if (config.use_u64)
+                            lhs.data.var_ref
+                        else
+                            (@as(u64, @intCast(lhs.data.var_ref[1])) << 32) | lhs.data.var_ref[0];
+                        self.variables[name] = value;
                         return value;
                     },
                     else => return error.ExpressionIsNotAssignable,
@@ -271,7 +333,12 @@ pub const Executor = struct {
                 expr.data.number
             else
                 (@as(u64, @intCast(expr.data.number[1])) << 32) | expr.data.number[0],
-            .var_ref => return self.variables.getContext(expr.data.name, self.map_ctx) orelse error.UndefinedVariable,
+            .var_ref => return self.variables[
+                if (config.use_u64)
+                    expr.data.var_ref
+                else
+                    (@as(u64, @intCast(expr.data.var_ref[1])) << 32) | expr.data.var_ref[0]
+            ],
             .print => {
                 const value = try self.executeExpr(expr.data.unary);
                 try self.writer.print("{d}\n", .{value});

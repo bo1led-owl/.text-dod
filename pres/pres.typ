@@ -10,6 +10,7 @@
 #let blue = rgb(83, 105, 170)
 #let purple = rgb(180, 105, 170)
 #let orange = rgb(210, 125, 70)
+#let blood = rgb(210, 25, 70)
 
 #set document(title: [Properly Cooking with Data-Oriented Design])
 
@@ -86,10 +87,10 @@
 
 #let main-benchmark(n) = {
   benchmark(
-    [На 100.000 выражений со средней глубиной 12.6],
-    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact").slice(0, n),
-    (red, green, blue, purple, orange).slice(0, n),
-    (1.326, 1.004, 1.021, 0.974, 0.898).slice(0, n),
+    [На 100.000 выражений со средней глубиной 12.6 (129МБ)],
+    ("GPA", "Arena", "AoS", "SoA", "AoS+", "Arena+").slice(0, n),
+    (red, green, blue, purple, orange, blood).slice(0, n),
+    (1.310, 0.903, 1.272, 1.347, 1.205, 0.867).slice(0, n),
   )
 }
 
@@ -191,8 +192,30 @@
         kind: enum(u8) { ... },
         data: union {
             number: u64,
-            name: []const u8, // ptr + len
-            unary: *Expr,
+            name:   []const u8, // ptr + len
+            unary:  *Expr,
+            binary: Binary,
+        },
+        const Binary = struct { lhs: *Expr, rhs: *Expr, };
+
+        // recursive `free` (a lot of extra work!)
+        fn deinit(self: *Expr, gpa: std.mem.Allocator) void { ... }
+    };
+    ```
+  ]
+]
+
+#slide[
+  = Реальность \\ хешмапа
+
+  #align(center)[
+    ```zig
+    const Expr = struct {
+        kind: enum(u8) { ... },
+        data: union {
+            number: u64,
+            name:   u64,
+            unary:  *Expr,
             binary: Binary,
         },
         const Binary = struct { lhs: *Expr, rhs: *Expr, };
@@ -414,6 +437,28 @@
 ]
 
 #slide[
+  = А что у нас?
+
+  #align(center)[
+    ```zig
+    const Expr = struct {
+        kind: enum(u8) { ... },
+        data: union {
+            number: u64,
+            name:   u64,
+            unary:  *Expr,
+            binary: Binary,
+        },
+        const Binary = struct { lhs: *Expr, rhs: *Expr, };
+
+        // recursive `free` (a lot of extra work!)
+        fn deinit(self: *Expr, gpa: std.mem.Allocator) void { ... }
+    };
+    ```
+  ]
+]
+
+#slide[
   = Получается...
 
   Мы раскидали по памяти немаленькие объекты
@@ -550,8 +595,8 @@
     kind: enum(u8) { ... },
     data: union {
         number: u64,
-        name: []const u8, // ptr + len
-        unary: *Expr,
+        name:   u64,
+        unary:  *Expr,
         binary: Binary,   // ptr + ptr
     },
     ```
@@ -580,9 +625,7 @@
   - Файл больше 4ГБ --- слишком много $=>$ хватит 32 бит
 
   #only(2)[
-    И сделаем выводы:
-    - Заменим `*Expr` на `u32`
-    - Полный диапазон значений `[]const u8` тоже не нужен, заменим на пару `u32`
+    И сделаем вывод: заменим `*Expr` на `u32`
   ]
 ]
 
@@ -595,14 +638,13 @@
       const Expr = struct {
           kind: enum(u8) { ... },
           data: union {
-              number: u64,
-              name: Name,
-              unary: Expr.Index,
-              binary: Binary,
+              number:  u64,
+              var_ref: u64,
+              unary:   Expr.Index,
+              binary:  Binary,
           },
         
         const Index  = enum(u32) { _ };
-        const Name   = struct { begin: u32, len: u32 };
         const Binary = struct { lhs: Expr.Index, rhs: Expr.Index };
       };
       ```
@@ -615,10 +657,10 @@
       ```zig
       kind: enum(u8) { ... },
       data: union {
-          number: u64,
-          name: Name,        // u32 + u32
-          unary: Expr.Index, // u32
-          binary: Binary,    // u32 + u32
+          number:  u64,
+          var_ref: u64,
+          unary:   Expr.Index, // u32
+          binary:  Binary,     // u32 + u32
       },
       ```
     ]
@@ -757,7 +799,8 @@
     const Expr = struct {
         kind: enum(u8) { ... },
         data: union {
-            number: u64, // !!!
+            number:  u64, // !!!
+            var_ref: u64,
             ...
         },
     };
@@ -767,11 +810,29 @@
     const Expr = struct {
         kind: enum(u8) { ... },
         data: union {
-            number: [2]u32, // :)
+            number:  [2]u32, // :)
+            var_ref: [2]u32,
             ...
         },
     };
     ```
+  ]
+
+  #only(3)[
+    #align(left + top)[Размер?]
+    #align(top)[
+      ```zig
+      const Expr = struct {
+          kind: enum(u8) { ... },
+          data: union {
+              number:  [2]u32,
+              var_ref: [2]u32,
+              unary:   Expr.Index, // u32
+              binary:  Binary,     // u32 + u32
+          },
+      };
+      ```
+    ]
   ]
 ]
 
@@ -881,35 +942,133 @@
 ]
 
 #slide[
-  = Прочие бенчмарки (1)
+  #set page(footer: none, margin: 0em)
+  #align(center + horizon, image("reze-rain.jpg", height: 100%))
+]
+
+#slide[
+  #set page(margin: 0pt, header: none, footer: none)
+
+  #place(image("dante.jpg", height: 100%, width: auto, fit: "cover"))
+
+  #place(top + center, dy: 2em, [
+    #set text(font: "DMC5Font")
+
+    #let chrome = gradient.linear(
+      white,
+      gray.lighten(30%),
+      gray,
+      gray.darken(30%),
+      angle: 86deg,
+      relative: auto,
+    )
+
+    #let logo(body, size, tracking) = box[
+      #set text(size: size, tracking: tracking)
+      #place(dx: size * 0.05, dy: size * 0.045, text(fill: rgb("#000000dd"), body))
+      #place(text(fill: rgb(0, 0, 0, 0), stroke: 1.6pt + rgb("#0a0a0a"), body))
+      #text(fill: chrome, body)
+    ]
+
+    #logo([Properly Cooking], 100pt, 8pt)
+
+    #logo([Data-Oriented Design], 55pt, 3pt)
+  ])
+]
+
+#slide[
+  = Прожарка
+
+  Вид операции --- всего 8 вариантов (3 бита).
+
+  Указатель на выражение --- выровнен по 8.
+
+  Упакуем!
+
+  #align(center, grid(
+    rows: 2em,
+    columns: (20em, 2em),
+    stroke: (_, y) => if y == 0 { fg-color + 1pt },
+    `ptr[3:]`, `tag`,
+    `61`, `3`,
+  ))
+]
+
+#slide[
+  = Прожарка
+
+  #main-benchmark(6)
+]
+
+#slide[
+  = Прочие бенчмарки (1.1)
 
   #benchmark(
-    [На 1.000.000 выражений со средней глубиной 2.54],
-    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
-    (red, green, blue, purple, orange),
-    (0.4174, 0.2936, 0.2646, 0.2708, 0.2507),
+    [На 5.000.000 выражений глубины 3 (264МБ)],
+    ("GPA", "Arena", "AoS", "SoA", "AoS+", "Arena+"),
+    (red, green, blue, purple, orange, blood),
+    (2.194, 1.698, 2.316, 2.257, 1.839, 1.530),
   )
 ]
 
 #slide[
-  = Прочие бенчмарки (2)
+  = Прочие бенчмарки (1.2)
 
   #benchmark(
-    [На 10.000.000 выражений глубины 3],
-    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
-    (red, green, blue, purple, orange),
-    (8.413, 7.679, 7.728, 8.089, 7.556),
+    [На 16 выражениях глубины 27 (194МБ)],
+    ("GPA", "Arena", "AoS", "SoA", "AoS+", "Arena+"),
+    (red, green, blue, purple, orange, blood),
+    (1.845, 1.421, 2.217, 2.051, 1.623, 1.259),
   )
 ]
 
 #slide[
-  = Прочие бенчмарки (3)
+  = Массивы наносят ответный удар
+
+  ```c
+  ssize_t readv(int fildes, const struct iovec *iov, int iovcnt);
+  ssize_t writev(int fildes, const struct iovec *iov, int iovcnt);
+
+  struct iovec {
+      // starting address
+      void *iov_base;
+
+      // size of the memory pointed to by `iov_base`
+      size_t  iov_len;  
+  };
+  ```
+]
+
+#slide[
+  = Прочие бенчмарки (2.0)
 
   #benchmark(
-    [На 8 выражениях глубины 26],
-    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
-    (red, green, blue, purple, orange),
-    (0.7409, 0.5565, 0.5328, 0.5715, 0.5237),
+    [На 100.000 выражений со средней глубиной 12.6 (129-663МБ)],
+    ("GPA", "Arena", "AoS", "SoA", "AoS+", "Arena+"),
+    (red, green, blue, purple, orange, blood),
+    (1.310, 0.903, 0.806, 0.634, 0.597, 0.867),
+  )
+]
+
+#slide[
+  = Прочие бенчмарки (2.1)
+
+  #benchmark(
+    [На 5.000.000 выражений глубины 3 (264-1300МБ)],
+    ("GPA", "Arena", "AoS", "SoA", "AoS+", "Arena+"),
+    (red, green, blue, purple, orange, blood),
+    (2.194, 1.698, 1.183, 1.067, 1.152, 1.530),
+  )
+]
+
+#slide[
+  = Прочие бенчмарки (2.2)
+
+  #benchmark(
+    [На 16 выражениях глубины 27 (194-1003МБ)],
+    ("GPA", "Arena", "AoS", "SoA", "AoS+", "Arena+"),
+    (red, green, blue, purple, orange, blood),
+    (1.845, 1.421, 1.168, 1.029, 0.972, 1.259),
   )
 ]
 
@@ -974,40 +1133,49 @@
 ]
 
 #slide[
-  = Альт бенчмарки (1)
+  = Альтернативные бенчмарки (1)
 
   #benchmark(
-    [На 4.000.000 выражений глубины 3],
-    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
-    (red, green, blue, purple, orange),
-    (1.484, 0.951, 1.253, 1.103, 0.785),
+    [На 100.000 выражений со средней глубиной 12.6 (129-663МБ)],
+    ("GPA", "Arena", "AoS", "SoA", "AoS+", "Arena+"),
+    (red, green, blue, purple, orange, blood),
+    (1.153, 0.750, 0.261, 0.014, 0.201, 0.704),
   )
 ]
 
 #slide[
-  = Альт бенчмарки (2)
+  = Альтернативные бенчмарки (2)
 
   #benchmark(
-    [На 6 выражениях глубины 30],
-    ("OOP", "OOP + arena", "AoS", "SoA", "AoS compact"),
-    (red, green, blue, purple, orange),
-    (2.463, 1.641, 2.319, 1.858, 1.549),
+    [На 5.000.000 выражений глубины 3 (264-1300МБ)],
+    ("GPA", "Arena", "AoS", "SoA", "AoS+", "Arena+"),
+    (red, green, blue, purple, orange, blood),
+    (1.828, 1.371, 0.521, 0.025, 0.360, 1.224),
   )
 ]
 
 #slide[
-  #set page(footer: none, margin: 0em)
-  #align(center + horizon, image("reze-rain.jpg", height: 100%))
+  = Альтернативные бенчмарки (3)
+
+  #benchmark(
+    [На 16 выражениях глубины 27 (194-1003МБ)],
+    ("GPA", "Arena", "AoS", "SoA", "AoS+", "Arena+"),
+    (red, green, blue, purple, orange, blood),
+    (1.548, 1.114, 0.368, 0.02, 0.257, 0.986),
+  )
 ]
 
 #slide[
   = Takeaways
 
   - Плотно укладывать данные --- круто
-  - Решения нужно принимать на основе реальных параметров
-  - Не всё, что блестит --- золото
-  - Арены --- дешёвый способ выиграть производительность
-  - ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ]
+  - Арены --- круто
+  - Доверяй, но проверяй
+  - Следите за своим I/O
+  #only(2)[
+    - ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ ЗАМЕРЯЙТЕ
+  ]
+]
 
 #slide[
   = Further reading

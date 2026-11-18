@@ -95,8 +95,8 @@ const Generator = struct {
     encoder: bytecode.Encoder,
     rng: std.Random,
     random_depths: bool,
-    defined_vars: std.ArrayList(u32) = .empty,
-    n_names: u32 = 0,
+    defined_vars: std.ArrayList(u64) = .empty,
+    n_names: u64 = 0,
 
     pub fn deinit(g: *Generator) void {
         defer g.* = undefined;
@@ -113,37 +113,22 @@ const Generator = struct {
         return avg_depth;
     }
 
-    fn nextVar(g: *Generator) u32 {
+    fn nextVar(g: *Generator) u64 {
         defer g.n_names += 1;
         return g.n_names;
     }
 
-    fn pickVar(g: *Generator) ?u32 {
+    fn pickVar(g: *Generator) ?u64 {
         if (g.defined_vars.items.len == 0) {
             return null;
         }
 
-        const i = g.rng.uintLessThan(u32, @intCast(g.defined_vars.items.len));
+        const i = g.rng.uintLessThan(usize, @intCast(g.defined_vars.items.len));
         return g.defined_vars.items[i];
     }
 
-    fn writeName(g: *Generator, name: u32) !void {
-        const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
-        var buffer: [256]u8 = undefined;
-        var len: u32 = 0;
-
-        var n = name;
-        while (n > 0) : (n /= chars.len) {
-            if (len >= buffer.len) {
-                @panic("name buffer overflow");
-            }
-            const c = chars[n % chars.len];
-            buffer[len] = c;
-            len += 1;
-        }
-
-        try g.encoder.writeVarName(buffer[0..len]);
+    fn writeName(g: *Generator, name: u64) !void {
+        try g.encoder.writeVarName(name);
     }
 
     fn nextDepth(g: Generator, depth: u16) u16 {
