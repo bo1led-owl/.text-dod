@@ -597,7 +597,7 @@
         number: u64,
         name:   u64,
         unary:  *Expr,
-        binary: Binary,   // ptr + ptr
+        binary: Binary, // ptr + ptr
     },
     ```
   ]
@@ -947,39 +947,9 @@
 ]
 
 #slide[
-  #set page(margin: 0pt, header: none, footer: none)
+  = Возвращение арены
 
-  #place(image("dante.jpg", height: 100%, width: auto, fit: "cover"))
-
-  #place(top + center, dy: 2em, [
-    #set text(font: "DMC5Font")
-
-    #let chrome = gradient.linear(
-      white,
-      gray.lighten(30%),
-      gray,
-      gray.darken(30%),
-      angle: 86deg,
-      relative: auto,
-    )
-
-    #let logo(body, size, tracking) = box[
-      #set text(size: size, tracking: tracking)
-      #place(dx: size * 0.05, dy: size * 0.045, text(fill: rgb("#000000dd"), body))
-      #place(text(fill: rgb(0, 0, 0, 0), stroke: 1.6pt + rgb("#0a0a0a"), body))
-      #text(fill: chrome, body)
-    ]
-
-    #logo([Properly Cooking], 100pt, 8pt)
-
-    #logo([Data-Oriented Design], 55pt, 3pt)
-  ])
-]
-
-#slide[
-  = Прожарка
-
-  Вид операции --- всего 8 вариантов (3 бита).
+  Вид выражения --- всего 8 вариантов (3 бита).
 
   Указатель на выражение --- выровнен по 8.
 
@@ -995,7 +965,7 @@
 ]
 
 #slide[
-  = Прожарка
+  = Возвращение арены
 
   #main-benchmark(6)
 ]
@@ -1023,6 +993,38 @@
 ]
 
 #slide[
+  #set page(margin: 0pt, header: none, footer: none)
+
+  #place(image("dante.jpg", height: 100%, width: auto, fit: "cover"))
+
+  #place(top + center, dy: 2em, [
+    #set text(font: "DMC5Font")
+
+    #let chrome = gradient.linear(
+      white,
+      gray.lighten(30%),
+      gray,
+      gray.darken(30%),
+      angle: 86deg,
+      relative: auto,
+    )
+
+    #let logo(body, size, tracking) = box[
+      #set text(size: size, tracking: tracking)
+      #place(dx: size * 0.05, dy: size * 0.045, text(fill: rgb("#000000dd"), body))
+      #place(text(fill: rgb(0, 0, 0, 0), stroke: 1.6pt + rgb("#0a0a0a"), body))
+      #text(fill: chrome, body)
+    ]
+
+    #logo([Properly Cooking], 100pt, 8pt)
+
+    #logo([with Data-Oriented Design], 55pt, 3pt)
+
+    #logo([(for real this time)], 42pt, 2pt)
+  ])
+]
+
+#slide[
   = Массивы наносят ответный удар
 
   ```c
@@ -1037,6 +1039,41 @@
       size_t  iov_len;  
   };
   ```
+]
+
+#slide[
+  = Массивы наносят ответный удар
+
+  #columns(2)[
+    Раньше:
+
+    ```zig
+    switch (readOpcode()) {
+      .binary =>
+        makeBinary(
+          readExpr(),
+          readExpr(),
+        ),
+      ...
+    }
+    ```
+
+    >30K `pread` + реаллокации
+
+    #colbreak()
+    Сейчас:
+
+    ```zig
+    var tl_len, all_len;
+    readv(f, &tl_len, &all_len);
+
+    var tl = alloc(tl_len);
+    var all = alloc(all_len);
+    readv(f, &tl, &all);
+    ```
+
+    2 `preadv`, 2 аллокации
+  ]
 ]
 
 #slide[
@@ -1128,8 +1165,6 @@
       [], ..range(columns).map(_ => [8]), $dots.c.h$,
     )
   ])
-
-  Как всё классно укладывается в кеш и векторизуется. Посмотрим
 ]
 
 #slide[
